@@ -477,7 +477,7 @@ function hePlay() {
   if (!st.busy) hePlayNext();
   else ui.flash('Autoplay picks up after this step');
 }
-function hePause() { if (!st.playing && !st.busy) return; st.paused = !st.paused; heSyncPlayer(); }
+function hePause() { if (!st.playing || st.paused) return; st.paused = true; heSyncPlayer(); }
 function heStop() { st.token++; st.playing = false; st.paused = false; heResetState(); heSyncPlayer(); ui.render(); }
 function heResetState() {
   st.token++;
@@ -487,9 +487,14 @@ function heResetState() {
 function heSyncPlayer() {
   const pb = document.getElementById('hePlay'), ps = document.getElementById('hePause');
   if (!pb) return;
-  pb.textContent = st.playing && !st.paused ? '▶ Playing' : '▶ Play';
-  pb.setAttribute('aria-pressed', st.playing && !st.paused);
-  ps.textContent = st.paused ? '▶ Resume' : '❚❚ Pause';
+  // Play is the only way to start or resume; Pause and Stop only work while a run is going
+  const run = st.playing && !st.paused;
+  pb.textContent = run ? '▶ Playing' : st.paused ? '▶ Resume' : '▶ Play';
+  pb.disabled = run;
+  pb.setAttribute('aria-pressed', String(run));
+  ps.textContent = '❚❚ Pause';
+  ps.disabled = !run;
+  document.getElementById('heStop').disabled = !st.playing;
   document.getElementById('heLoop').checked = st.loop;
 }
 
@@ -535,6 +540,8 @@ const HE_CSS = `
   .player{width:100%;max-width:760px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:2px 0 12px}
   .player button{font-size:13px;padding:7px 16px;min-height:38px}
   .player button[aria-pressed=true]{background:var(--ink);color:var(--paper)}
+  .player button:disabled{opacity:.38;cursor:not-allowed}
+  .player #hePlay:disabled{opacity:1;cursor:default}
   .player label{display:flex;align-items:center;gap:6px;margin-left:4px;color:var(--muted);text-transform:uppercase;font-size:11px;letter-spacing:.08em}
   .player input{width:18px;height:18px;accent-color:var(--ink)}
   .scope-panel{width:100%;max-width:760px;display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:18px;align-items:center;margin-bottom:18px}
@@ -746,7 +753,10 @@ heSyncPlayer(); ui.render();
 // labels on the microscope view start off; ?labels=1 turns them on
 if (!new URLSearchParams(location.search).has('labels')) document.getElementById('lbl').click();
 setInterval(() => { if (!st.busy) ui.render(); }, 120);           // keeps the tap-water ripples moving
-if (new URLSearchParams(location.search).get('autoplay') === '1') { st.loop = true; heSyncPlayer(); hePlay(); }
+// opening the page plays one full run (no loop); ?autoplay=1 loops, ?autoplay=0 starts still
+const heAuto = new URLSearchParams(location.search).get('autoplay');
+if (heAuto === '1') { st.loop = true; heSyncPlayer(); hePlay(); }
+else if (heAuto !== '0' && !st.step) setTimeout(() => { if (!st.playing && !st.busy && !st.step) hePlay(); }, 800);
 </script>
 </body>
 </html>

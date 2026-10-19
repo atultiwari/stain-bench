@@ -1,6 +1,6 @@
 # Stain Bench
 
-**H&E staining, three ways.** Interactive teaching figures of routine haematoxylin and eosin (H&E) staining of paraffin sections, for medical students, pathology residents and laboratory trainees.
+**An interactive guide to H&E staining.** Interactive teaching figures of routine haematoxylin and eosin (H&E) staining of paraffin sections, for medical students, pathology residents and laboratory trainees.
 
 **Live site:** https://atultiwari.github.io/stain-bench/
 

@@ -122,7 +122,7 @@ function hePlay() {
   if (!st.busy) hePlayNext();
   else heFlash('Autoplay picks up after this step');
 }
-function hePause() { if (!st.playing && !st.busy) return; st.paused = !st.paused; heSyncPlayer(); }
+function hePause() { if (!st.playing || st.paused) return; st.paused = true; heSyncPlayer(); }
 function heStop() { st.playing = false; st.paused = false; heResetState(); heSyncPlayer(); }
 function heResetState() {
   st.token++;
@@ -144,9 +144,14 @@ function heNote(title, text) {
 }
 function heSyncPlayer() {
   const pb = document.getElementById('hePlay'), ps = document.getElementById('hePause');
-  pb.textContent = st.playing && !st.paused ? '▶ Playing' : '▶ Play';
-  pb.setAttribute('aria-pressed', String(st.playing && !st.paused));
-  ps.textContent = st.paused ? '▶ Resume' : '❚❚ Pause';
+  // Play is the only way to start or resume; Pause and Stop only work while a run is going
+  const run = st.playing && !st.paused;
+  pb.textContent = run ? '▶ Playing' : st.paused ? '▶ Resume' : '▶ Play';
+  pb.disabled = run;
+  pb.setAttribute('aria-pressed', String(run));
+  ps.textContent = '❚❚ Pause';
+  ps.disabled = !run;
+  document.getElementById('heStop').disabled = !st.playing;
   document.getElementById('heLoop').checked = st.loop;
 }
 function heSyncPanel() {
