@@ -271,7 +271,10 @@ function heStart(T, L, renderer, canvas) {
     renderer.render(world.scene, camera);
   });
   window.HE3D = { st, follow: heFollow, bench: heSetBench, view: cam.go, go: heGo, play: hePlay, stop: heStop, tapStation: heTapStation, tapRack: heTapRack, camera, controls };
-  if (HE_URL.get('autoplay') === '1') { st.loop = true; heSyncPlayer(); hePlay(); }
+  // opening the page plays one full run (no loop); ?autoplay=1 loops, ?autoplay=0 starts still
+  const heAuto = HE_URL.get('autoplay');
+  if (heAuto === '1') { st.loop = true; heSyncPlayer(); hePlay(); }
+  else if (heAuto !== '0' && !st.step) setTimeout(() => { if (!st.playing && !st.busy && !st.step) hePlay(); }, 1200);
 }
 
 // camera presets: a short eased swing between views; the distance fits the bench to the canvas

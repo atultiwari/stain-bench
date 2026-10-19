@@ -1386,8 +1386,8 @@ const TIMELINE = buildTimeline();
 let done = 0; // steps finished
 let playing = -1; // step playing, or -1
 let clock = 0; // seconds into the playing step
-let mode = "manual";
-try { mode = localStorage.getItem("stainbench-wm-mode") === "auto" ? "auto" : "manual"; } catch { /* storage blocked: default */ }
+// every visit opens in Auto, the camera following the rack; ?mode=manual opens in Manual
+let mode = new URLSearchParams(location.search).get("mode") === "manual" ? "manual" : "auto";
 let autoWait = 0;
 let frozen = false; // a still for the critic pass: time stops, the moment stays
 let paused = false; // the player's Pause: time stops until Play
@@ -1471,15 +1471,15 @@ function dropperAt(p) {
 // Desktop gets the same camera a little wider; "Whole bench" shows the full line.
 const narrow = matchMedia("(max-width: 560px)"); // phones in portrait (he-mobile-spec.md)
 // Default: the whole bench on laptops; on phones the bench is too small to read, so follow the rack.
-let overview = !narrow.matches;
-try { const v = localStorage.getItem("stainbench-wm-view"); if (v) overview = v === "whole"; } catch { /* storage blocked */ }
+let overview = false;
 let cam = null;
 function follow(pose, dt) {
   // Phones: frame the jar under the rack plus one neighbour each side (3 pitches + margin),
   // in the box's own aspect so nothing is letterboxed. Laptops: the wider follow view.
   const box = svg.getBoundingClientRect();
   const aspect = box.width > 0 && box.height > 0 ? box.height / box.width : 0.5;
-  const CROP = narrow.matches ? { w: 150, h: 150 * aspect } : { w: 500, h: 290 };
+  // laptops keep the whole bench's shape (zoomed in about 2x), so following never changes the page height
+const CROP = narrow.matches ? { w: 150, h: 150 * aspect } : { w: WIDTH * 0.48, h: HEIGHT * 0.48 };
   if (overview) { svg.setAttribute("viewBox", `0 0 ${WIDTH} ${HEIGHT}`); cam = null; return; }
   const f = pose.focus || 0; // 0 = follow the rack, 1 = follow the picked slide; eased in the pick move
   const focus = [lerp(pose.cx, pose.picked ? pose.bx : pose.cx, f), 0, narrow.matches ? lerp(34, 26, f) : lerp(52, 30, f)];
@@ -1658,7 +1658,6 @@ function startOver() {
 function setMode(next) {
   mode = next;
   if (mode === "manual") paused = false;
-  try { localStorage.setItem("stainbench-wm-mode", mode); } catch { /* storage blocked: keep in memory */ }
   document.querySelectorAll("[data-mode]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
   autoWait = 0.5;
   render(performance.now()); run();
@@ -1670,7 +1669,6 @@ const viewBtn = ui(".he-view");
 const syncView = () => { viewBtn.textContent = overview ? "Follow the rack" : "Whole bench"; viewBtn.setAttribute("aria-pressed", String(overview)); };
 viewBtn.addEventListener("click", () => {
   overview = !overview;
-  try { localStorage.setItem("stainbench-wm-view", overview ? "whole" : "follow"); } catch { /* storage blocked */ }
   syncView(); render(performance.now());
 });
 syncView();
