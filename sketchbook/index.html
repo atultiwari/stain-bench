@@ -1,0 +1,752 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>H&amp;E staining</title>
+<script src="../shared/switcher.js" defer></script>
+</head>
+<body>
+<script src="engine.js"></script>
+<script>
+/* ============================================================
+   H&E staining on a U-shaped, two-tier staining bench.
+   Front row on the bench (read left to right), back row on a raised shelf (read right to left).
+   x = depth (toward viewer-right), y = width (toward viewer-left), z = up; 1 unit = 1 mm.
+   ============================================================ */
+const HE_P = 64, HE_BY = 9 * HE_P + 16, HE_BH = 3;                 // station pitch, bench length, board thickness
+const HE_RISER = { x0: 4, x1: 72, h: 112 };                          // the raised back shelf
+const HE_ROWS = { front: { x: 114, base: HE_BH }, back: { x: 38, base: HE_RISER.h } };
+const HE_JAR = { dx: 22, dy: 28, h: 92, level: 72 };                 // half depth, half width, height, liquid depth
+const HE_SAFE = { front: HE_BH + HE_JAR.h + 12, back: HE_RISER.h + HE_JAR.h + 12 };
+const HE_LIQ = {
+  // clear solvents get a faint but recognisable tint (straw xylene, pale alcohol, blue water) so a full jar never looks empty
+  xyl: ['#ead27e', .5], alc: ['#bfe0ea', .55], water: ['#93c8ee', .6], haem: ['#3d2160', .82],
+  wash: ['#82bde9', .6], acid: ['#efb2c4', .6], blue: ['#76a3e4', .65], eosin: ['#e0336c', .72],
+};
+// 16 stations, each visited once, in order: the rack only ever moves forward along the U.
+// [key, words on the jar's tape, liquid, full name]
+// The shared protocol (he-protocol.md, from Bancroft 8th ed. ch. 10 p. 131 and ch. 11 Fig. 11.5):
+// 17 stations, each visited once, in order: the rack only ever moves forward along the U.
+// [key, words on the jar's tape, liquid, full name]
+const HE_STATIONS = [
+  ...[['start', ['START'], 'tray', 'Start tray: paraffin sections'],
+      ['xyl1', ['XYLENE'], 'xyl', 'Xylene'], ['alc99a', ['ALC', '99%'], 'alc', '99% (absolute) alcohol'],
+      ['alc70', ['ALC', '70%'], 'alc', '70% alcohol'], ['dw', ['WATER'], 'water', 'Water'],
+      ['haem', ['HAEM'], 'haem', 'Harris haematoxylin'], ['w1', ['TAP', 'WATER'], 'wash', 'Running tap water'],
+      ['acid', ['ACID', 'ALC'], 'acid', '1% acid alcohol (1% HCl in 70% alcohol)'], ['w2', ['TAP', 'WATER'], 'wash', 'Running tap water']]
+    .map(([key, lines, liq, name], j) => ({ key, lines, liq, name, row: 'front', y: HE_BY - 8 - (j + .5) * HE_P })),
+  ...[['scotts', ["SCOTT'S"], 'blue', "Scott's tap water substitute (bluing)"], ['w3', ['TAP', 'WATER'], 'wash', 'Running tap water'],
+      ['eosin', ['EOSIN'], 'eosin', '1% eosin Y'], ['w4', ['TAP', 'WATER'], 'wash', 'Running tap water'],
+      ['alc95', ['ALC', '95%'], 'alc', '95% alcohol'], ['alc99b', ['ALC', '99%'], 'alc', '99% (absolute) alcohol'],
+      ['xyl2', ['XYLENE'], 'xyl', 'Xylene (clearing)'], ['mount', ['MOUNT'], 'pad', 'Mounting: DPX and coverslip']]
+    .map(([key, lines, liq, name], k) => ({ key, lines, liq, name, row: 'back', y: 8 + (k + .5) * HE_P })),
+].map((s0, i) => ({ ...s0, num: i + 1, label: s0.lines.join(' ') }));
+// seconds in each bath (he-protocol.md); trays and mounting have none
+const HE_SECS = { xyl1: 300, alc99a: 120, alc70: 120, dw: 60, haem: 300, w1: 300, acid: 10, w2: 60,
+                  scotts: 60, w3: 300, eosin: 600, w4: 120, alc95: 60, alc99b: 120, xyl2: 300 };
+const HE_IDX = Object.fromEntries(HE_STATIONS.map((s0, i) => [s0.key, i]));
+const heKind = s0 => s0.liq === 'tray' ? 'tray' : s0.liq === 'pad' ? 'pad' : 'jar';
+const heRowOfX = x => x < HE_RISER.x1 + 4 ? 'back' : 'front';
+
+/* ---------- the protocol (regressive H&E, Harris haematoxylin) ---------- */
+// lab times in minutes, per he-protocol.md (Bancroft: haem 5 min, tap water <=5 min, acid alcohol 5-10 s,
+// Scott's dip then 5 min tap water, 1% eosin Y 10 min then 1-5 min tap water); 47 min 10 s in all
+const HE_STEPS = [
+  { label: 'Dewax', path: ['xyl1', 'alc99a', 'alc70', 'dw'], to: 'dewaxed', mins: 10,
+    doing: 'Xylene dissolves the paraffin wax; 99% then 70% alcohol, then water, take the section back to water.',
+    done: 'Dewaxed and in water: ready for water-based stains.' },
+  { label: 'Haematoxylin', path: ['haem', 'w1'], to: 'haem', mins: 10,
+    doing: 'Harris haematoxylin (5 min) stains the nuclei and overstains everything else. 5 min in running tap water starts to blue it.',
+    done: 'Everything is purple: overstained on purpose.' },
+  { label: 'Differentiate', path: ['acid', 'w2'], to: 'diff', mins: 70 / 60, quick: true,
+    doing: 'Quick dips (5 to 10 s) in 1% acid alcohol remove the extra dye. The nuclei keep it, but the acid turns them red. Running tap water stops the acid.',
+    done: 'Nuclei keep the dye and are red for now; the cytoplasm is clearing.' },
+  { label: 'Blue', path: ['scotts', 'w3'], to: 'blued', mins: 6,
+    doing: "Scott's tap water substitute is a weak alkali: it turns the nuclei from red to blue-black. Then 5 min in running tap water.",
+    done: 'Blue-black nuclei.' },
+  { label: 'Eosin', path: ['eosin', 'w4'], to: 'eosin', mins: 12,
+    doing: '1% eosin Y (10 min) stains cytoplasm pink and red cells orange-red. Running tap water (2 min) then washes out the extra eosin.',
+    done: 'Pink cytoplasm, orange-red red cells, blue-black nuclei: the H&E look.' },
+  { label: 'Dehydrate and clear', path: ['alc95', 'alc99b', 'xyl2'], to: 'clear', mins: 8,
+    doing: '95% then 99% alcohol take the water out (a little more eosin comes out too); xylene clears the section until it is glass-clear.',
+    done: 'Cleared. The slides wait in xylene so the sections never dry.' },
+  { label: 'Coverslip', path: ['mount'], to: 'mounted', mins: 0, mount: true,
+    doing: 'One slide at a time comes out of the xylene, still wet, and lies flat. A drop of DPX goes on, then the coverslip is lowered from one edge so no air is trapped.',
+    done: 'Mounted: an H&E slide, ready for the microscope. The others wait in xylene for their turn.' },
+];
+
+/* what the section looks like under the microscope after each step */
+const HE_LOOK = {
+  wax:     { bg: '#efe9dc', cyto: '#e9e2d2', nuc: '#dbd2c1', rbc: '#e4dccb', fib: '#e8e1d2', haze: .5 },
+  dewaxed: { bg: '#f8f6f1', cyto: '#ece9e2', nuc: '#d9d4ca', rbc: '#e6e1d8', fib: '#ebe8e1', haze: .08 },
+  haem:    { bg: '#cbbde0', cyto: '#a690c8', nuc: '#381f62', rbc: '#b29ed0', fib: '#b5a4d2', haze: 0 },
+  diff:    { bg: '#f7f0f4', cyto: '#e5d9e7', nuc: '#6c285c', rbc: '#ece3eb', fib: '#ebe2ec', haze: 0 },
+  blued:   { bg: '#f7f7fb', cyto: '#e7e9f2', nuc: '#2a3a8c', rbc: '#ececf2', fib: '#ececf3', haze: 0 },
+  eosin:   { bg: '#fbedf2', cyto: '#ed8db0', nuc: '#383b8d', rbc: '#df3d5c', fib: '#f3a3bf', haze: .12 },
+  clear:   { bg: '#fdf1f5', cyto: '#ee8db0', nuc: '#33388c', rbc: '#e03a5a', fib: '#f4a3bf', haze: 0 },
+  mounted: { bg: '#fdf1f5', cyto: '#ee8db0', nuc: '#33388c', rbc: '#e03a5a', fib: '#f4a3bf', haze: 0 },
+};
+const heLook = () => {
+  const a = HE_LOOK[st.from], b = HE_LOOK[st.to], t = st.blend;
+  return Object.fromEntries(Object.keys(a).map(k => [k, k === 'haze' ? a[k] + (b[k] - a[k]) * t : mix(a[k], b[k], t)]));
+};
+const heTissue = lk => lk.haze > .3 ? '#f3eee3' : mix(lk.nuc, lk.cyto, .62);
+
+/* the field under the microscope: cells, red cells and collagen, from a fixed seed */
+const HE_FIELD = (() => {
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const cells = [], rbcs = [], fibres = [];
+  for (let gx = -1; gx <= 1.01; gx += .42) for (let gy = -1; gy <= 1.01; gy += .42) {
+    const cx = gx + (rnd() - .5) * .16, cy = gy + (rnd() - .5) * .16;
+    if (Math.hypot(cx, cy) > 1.05) continue;
+    if (rnd() < .16) { for (let k = 0; k < 3; k++) rbcs.push([cx + (rnd() - .5) * .2, cy + (rnd() - .5) * .2]); continue; }
+    const r = .15 + rnd() * .05, pts = [];
+    for (let k = 0; k < 8; k++) { const a = k / 8 * 2 * Math.PI, rr = r * (.82 + rnd() * .3); pts.push([cx + rr * Math.cos(a), cy + rr * Math.sin(a)]); }
+    cells.push({ pts, nx: cx + (rnd() - .5) * .05, ny: cy + (rnd() - .5) * .05, rx: .055 + rnd() * .025, ry: .045 + rnd() * .02, rot: rnd() * 180 });
+  }
+  for (let k = 0; k < 4; k++) { const y = -.8 + k * .5 + rnd() * .1; fibres.push([[-1.1, y], [-.4, y + .12], [.3, y - .1], [1.1, y + .08]]); }
+  rbcs.push([-.56, .66], [-.47, .73], [-.6, .76]);          // a small group of red cells in a capillary, low left
+  return { cells, rbcs, fibres };
+})();
+
+/* ---------- state ---------- */
+const heFresh = () => ({ step: 0, from: 'wax', to: 'wax', blend: 1, at: 0, rx: HE_ROWS.front.x, ry: HE_STATIONS[0].y,
+  rz: HE_BH + 3, busy: false, mins: 0, ms: null, now: 0, bathU: 0 });
+const st = { pal: 'cobalt', playing: false, paused: false, loop: false, token: 0, benchView: false, ...heFresh() };
+
+/* ============================================================
+   drawing
+   ============================================================ */
+const HE_GLASS = { l: '#eef6f7', m: '#d3e5e8', d: '#a9c3c8' };
+const heBox = (x0, y0, z0, x1, y1, z1) => [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]];
+
+// one slide standing in the rack: glass, frosted label end, the section
+function heSlide(x, ry, rz, lk) {
+  const y0 = ry - 12.5, y1 = ry + 12.5, z0 = rz + 4, z1 = rz + 79, X = PX(x + 1);
+  let s = fill(pd([[x, y0, z1], [x + 1, y0, z1], [x + 1, y1, z1], [x, y1, z1]]), HE_GLASS.m)
+        + fill(pd(on(PY(y1), rectUV(x, z0, x + 1, z1))), HE_GLASS.m)
+        + fill(pd(on(X, rectUV(y0, z0, y1, z1))), HE_GLASS.l, 'fill-opacity=".82"');
+  s += shape(on(PX(x + 1.05), rectUV(y0 + .8, z1 - 17, y1 - .8, z1 - 1)), '#fbfaf5', .5);
+  s += fill(pd(on(PX(x + 1.05), ellUV(ry, rz + 24, 8.5, 10.5, 18))), heTissue(lk));
+  return s + ink(pd(on(X, rectUV(y0, z0, y1, z1))), .7);
+}
+
+function heRack() {
+  const { rx, ry, rz } = st, lk = heLook(), y0 = ry - 16, y1 = ry + 16;
+  const post = x => rod([x, y0, rz + 3], [x, y0, rz + 44], .9, METAL) + rod([x, y1, rz + 3], [x, y1, rz + 44], .9, METAL);
+  let s = box(rx - 14, y0, rz, rx + 14, y1, rz + 3, METAL, toneI, .8) + post(rx - 13);
+  const xs = st.ms ? [-10, -5, 0, 5] : [-10, -5, 0, 5, 10];
+  xs.forEach(dx => { s += heSlide(rx + dx, ry, rz, lk); });
+  s += post(rx + 13);
+  s += rod([rx, y0, rz + 44], [rx, y0, rz + 92], 1, METAL) + rod([rx, y1, rz + 44], [rx, y1, rz + 92], 1, METAL)
+     + rod([rx, y0, rz + 92], [rx, y1, rz + 92], 1.4, METAL);
+  if (!st.ms) {                                   // mark the slide shown under the microscope
+    const [X, Y] = P(rx + 11.1, ry, rz + 24);
+    s += `<circle cx="${f(X)}" cy="${f(Y)}" r="${f(15 * INK_K)}" fill="none" stroke="var(--accent,#f4b829)" stroke-width="2" stroke-dasharray="${f(3 * INK_K)} ${f(2.4 * INK_K)}"/>`;
+  }
+  return act('rack', s);
+}
+const heRackInside = i => st.at === i && heKind(HE_STATIONS[i]) === 'jar' && st.rz < HE_ROWS[HE_STATIONS[i].row].base + HE_JAR.h;
+
+// a station's label: a pill that faces the viewer, so it reads at any size. Collected and drawn last,
+// so no nearer jar hides it; it stays tappable like its station.
+let heLabels = [];
+function heLabel(x, y, z, text, lit, i) {
+  heLabels.push(act('station', heLabelSvg(x, y, z, text, lit), `data-i="${i}"`));
+  return '';
+}
+function heLabelSvg(x, y, z, text, lit) {
+  const k = INK_K, [X, Y] = P(x, y, z), fs = 12.5 * k, w = text.length * fs * .62 + fs * 1.3, h = fs * 1.75;
+  return `<g><rect x="${f(X - w / 2)}" y="${f(Y - h / 2)}" width="${f(w)}" height="${f(h)}" rx="${f(h / 2)}" fill="${lit ? 'var(--accent,#f4b829)' : '#fff8e4'}" stroke="${INK}" stroke-width="1.2"/>`
+    + `<text x="${f(X)}" y="${f(Y + fs * .36)}" font-size="${f(fs)}" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-weight="800" letter-spacing=".02em" fill="${INK}">${text}</text></g>`;
+}
+
+function heJarBack(c, b, yc, s0) {
+  const { dx, dy, h, level } = HE_JAR, x0 = c - dx, x1 = c + dx, y0 = yc - dy, y1 = yc + dy, z1 = b + h, lz = b + level, [col, a] = HE_LIQ[s0.liq];
+  let s = fill(pd([[x0, y0, b], [x0, y1, b], [x0, y1, z1], [x0, y0, z1]]), HE_GLASS.m, 'fill-opacity=".55"')
+        + fill(pd([[x0, y0, b], [x1, y0, b], [x1, y0, z1], [x0, y0, z1]]), HE_GLASS.d, 'fill-opacity=".35"')
+        + fill(pd([[x0, y0, b + 1], [x1, y0, b + 1], [x1, y1, b + 1], [x0, y1, b + 1]]), HE_GLASS.m, 'fill-opacity=".6"');
+  s += fill(pd([[x0 + 1, y0 + 1, lz], [x1 - 1, y0 + 1, lz], [x1 - 1, y1 - 1, lz], [x0 + 1, y1 - 1, lz]]), mix(col, '#ffffff', .25), `fill-opacity="${a * .7}"`);
+  if (s0.liq === 'wash') s += heTap(c, yc, b, s0.row);
+  return s;
+}
+function heJarFront(c, b, yc, s0, lit) {
+  const { dx, dy, h, level } = HE_JAR, x0 = c - dx, x1 = c + dx, y0 = yc - dy, y1 = yc + dy, z1 = b + h, lz = b + level, [col, a] = HE_LIQ[s0.liq];
+  let s = fill(pd([[x1 - 1, y0 + 1, b + 1], [x1 - 1, y1 - 1, b + 1], [x1 - 1, y1 - 1, lz], [x1 - 1, y0 + 1, lz]]), col, `fill-opacity="${a}"`)
+        + fill(pd([[x0 + 1, y1 - 1, b + 1], [x1 - 1, y1 - 1, b + 1], [x1 - 1, y1 - 1, lz], [x0 + 1, y1 - 1, lz]]), mix(col, '#000000', .12), `fill-opacity="${a}"`)
+        + `<path d="${pd([[x1 - 1, y0 + 1, lz], [x1 - 1, y1 - 1, lz], [x0 + 1, y1 - 1, lz]], false)}" fill="none" stroke="${mix(col, '#000000', .35)}" stroke-width="1.6"/>`
+        + fill(pd([[x1 - .9, y0 + 3, lz - 1.2], [x1 - .9, y1 - 3, lz - 1.2], [x1 - .9, y1 - 3, lz - 3], [x1 - .9, y0 + 3, lz - 3]]), '#ffffff', 'opacity=".45"');   // the liquid's surface and a highlight just under it
+  s += `<g pointer-events="none">${fill(pd(on(PX(x1), rectUV(y0, b, y1, z1))), '#cfe9f0', 'fill-opacity=".14"')}`
+     + fill(pd(on(PY(y1), rectUV(x0, b, x1, z1))), '#b9d6dc', 'fill-opacity=".22"')
+     + fill(pd(on(PX(x1 + .1), [[y0 + 8, b + 6], [y0 + 13, b + 6], [y0 + 22, z1 - 6], [y0 + 17, z1 - 6]])), '#ffffff', 'opacity=".38"') + '</g>';
+  s += ink(pd(on(PX(x1), rectUV(y0, b, y1, z1))), 1.1) + ink(pd(on(PZ(z1), rectUV(x0, y0, x1, y1))), 1.1);
+  s += hullInk(heBox(x0, y0, b, x1, y1, z1), 2.2);
+  return s + heTape(x1, yc, b, s0, lit);
+}
+// the label is tape stuck on the jar's front face, with the station's number in a badge above it
+function heTape(x1, yc, b, s0, lit) {
+  const two = s0.lines.length > 1, th = two ? 36 : 21, z0 = b + 7;
+  const fs = Math.max(...s0.lines.map(t => t.length)) > 6 ? 11.5 : 13;     // SCOTT'S is the one long word
+  let s = shape(on(PX(x1 + .3), rrUV(yc - 26, z0, yc + 26, z0 + th, 3)), lit ? 'var(--accent,#f4b829)' : '#fbf7ea', 1.1);
+  const base = two ? [z0 + th - 15, z0 + 4.5] : [z0 + 5];
+  s0.lines.forEach((t, k) => { s += tx(x1 + .4, yc, base[k], t, fs, INK, 800); });
+  const bz = z0 + th + 11;
+  s += shape(on(PX(x1 + .35), ellUV(yc + 16, bz, 7.5, 7.5, 20)), INK, 0) + tx(x1 + .45, yc + 16, bz - 3.4, String(s0.num), 9.5, '#fbf7ea', 800);
+  return s;
+}
+// running tap water: a chrome faucet (from the shelf face in front, from a standpipe at the back), a stream and ripples.
+// It sits just below the height the rack is carried at, so the rack passes over it.
+function heTap(c, yc, b, row) {
+  const y = yc + 21, zt = b + HE_JAR.h + 6, xs = c - 14, lz = b + HE_JAR.level;
+  let s = row === 'front' ? rod([HE_RISER.x1, y, zt], [xs, y, zt], 2.2, METAL)
+                          : rod([2, y, HE_RISER.h], [2, y, zt], 2.2, METAL) + rod([2, y, zt], [xs, y, zt], 2.2, METAL);
+  s += rod([xs, y, zt + .5], [xs, y, zt - 6], 2.2, METAL);
+  s += `<path d="${pd([[xs, y, zt - 6], [xs, y, lz]], false)}" stroke="#9fd0ef" stroke-width="2.6" stroke-linecap="round" opacity=".85"/>`;
+  const ph = (Date.now() / 600) % 1;
+  for (const r of [3 + ph * 6, 3 + ((ph + .5) % 1) * 6]) s += `<path d="${pd(on(PZ(lz + .1), ellUV(xs, y, r, r, 18)))}" fill="none" stroke="#ffffff" stroke-width=".8" opacity="${f(.9 - r / 10)}"/>`;
+  return s;
+}
+
+function heJar(i) {
+  const s0 = HE_STATIONS[i], row = HE_ROWS[s0.row], lit = st.at === i && st.ms === null;
+  let s = heJarBack(row.x, row.base, s0.y, s0);
+  if (heRackInside(i)) s += heRack();
+  if (st.ms && st.ms.inJar === i) s += heLoose();
+  return act('station', s + heJarFront(row.x, row.base, s0.y, s0, lit), `data-i="${i}"`);
+}
+
+function heTray(i) {
+  const s0 = HE_STATIONS[i], row = HE_ROWS[s0.row], c = row.x, b = row.base, yc = s0.y;
+  let s = box(c - 18, yc - 20, b, c + 18, yc + 20, b + 3, METAL, toneI, 1) + heLabel(c + 18, yc + 30, b + 2, `${s0.num} ${s0.label}`, st.at === i, i);
+  if (st.at === i) s += heRack();
+  return act('station', s, `data-i="${i}"`);
+}
+
+function hePad(i) {
+  const s0 = HE_STATIONS[i], c = HE_ROWS.back.x, b = HE_ROWS.back.base, yc = s0.y;
+  let s = box(c - 20, yc - 36, b, c + 20, yc + 40, b + 2, CERAMIC, toneI, 1);
+  const bm = matOf('#7a4726');
+  s += cyl(66, yc + 30, b, b + 18, 4.5, bm, toneI, 1) + cyl(66, yc + 30, b + 18, b + 23, 2.2, DARK, toneI, .8);
+  s += heLabel(c + 20, yc + 44, b + 2, `${s0.num} ${s0.label}`, st.ms !== null, i);
+  return act('station', s, `data-i="${i}"`);
+}
+
+/* ---------- the loose slide on its way to the mounting tile ---------- */
+function heFrame(t) {     // slide axes, from standing in the rack (t = 0) to lying flat, tissue up (t = 1)
+  const A = norm([0, t, 1 - t]), n0 = [1 - t, 0, t], d = dot(n0, A), N = norm(n0.map((v, i) => v - d * A[i]));
+  return { A, N, U: cross(N, A) };
+}
+function heLoose() {
+  const m = st.ms, { A, N, U } = heFrame(m.rot), lk = heLook();
+  const LP = (v, u, w) => [0, 1, 2].map(i => m.O[i] + A[i] * v + U[i] * u + N[i] * w);
+  const face = w => [LP(0, -12.5, w), LP(0, 12.5, w), LP(75, 12.5, w), LP(75, -12.5, w)];
+  let s = fill(pd(face(0)), HE_GLASS.m) + fill(pd(face(1)), HE_GLASS.l, 'fill-opacity=".9"');
+  s += shape([LP(58, -11.7, 1.05), LP(58, 11.7, 1.05), LP(74, 11.7, 1.05), LP(74, -11.7, 1.05)], '#fbfaf5', .5);
+  s += fill(pd(Array.from({ length: 18 }, (_, k) => { const a = k / 18 * 2 * Math.PI; return LP(20 + 10.5 * Math.sin(a), 8.5 * Math.cos(a), 1.05); })), heTissue(lk));
+  if (m.dpx > 0) s += fill(pd(Array.from({ length: 18 }, (_, k) => { const a = k / 18 * 2 * Math.PI; return LP(28 + 22 * m.dpx * Math.sin(a), (3 + 7 * m.dpx) * Math.cos(a), 1.1); })), '#e2b766', 'fill-opacity=".38"');
+  s += ink(pd(face(1)), .8);
+  if (m.drop > 0 && m.drop < 1) s += heDropper(LP(20, 0, 1));
+  if (m.cs > 0) s += heCoverslip(LP, m.cs);
+  return s;
+}
+function heDropper([x, y, z]) {
+  const t = st.ms.drop, zd = z + 34 - 34 * ease(t), [X, Y] = P(x, y, zd);
+  return rod([x, y, z + 62], [x, y, z + 38], 1.3, CLEAR) + `<ellipse cx="${f(P(x, y, z + 66)[0])}" cy="${f(P(x, y, z + 66)[1])}" rx="${f(3.4 * INK_K)}" ry="${f(4.6 * INK_K)}" fill="#3d3935" stroke="${INK}" stroke-width="1"/>`
+    + `<circle cx="${f(X)}" cy="${f(Y)}" r="${f(2.2 * INK_K)}" fill="#e2b766" stroke="${INK}" stroke-width=".6"/>`;
+}
+function heCoverslip(LP, t) {    // lowered from one edge: drop to the slide, then hinge down flat
+  const lift = Math.max(0, 1 - t / .3) * 24, ang = (t < .3 ? 1 : 1 - ease((t - .3) / .7)) * 35 * Math.PI / 180;
+  const hinge = LP(3, 0, 1.2 + lift), far = v => [hinge[0], hinge[1] + v * Math.cos(ang), hinge[2] + v * Math.sin(ang)];
+  const pts = [[hinge[0] - 11, hinge[1], hinge[2]], [hinge[0] + 11, hinge[1], hinge[2]]];
+  const [a, b] = [far(50), far(50)];
+  pts.push([a[0] + 11, a[1], a[2]], [b[0] - 11, b[1], b[2]]);
+  let s = fill(pd(pts), '#ffffff', 'fill-opacity=".38"') + ink(pd(pts), .6);
+  if (t >= 1) s += fill(pd([[hinge[0] - 9, hinge[1] + 8, hinge[2] + .1], [hinge[0] - 5, hinge[1] + 8, hinge[2] + .1], [hinge[0] + 9, hinge[1] + 36, hinge[2] + .1], [hinge[0] + 5, hinge[1] + 36, hinge[2] + .1]]), '#ffffff', 'opacity=".6"');
+  return s;
+}
+
+function heShadows() {
+  const front = boardTop(0, 0, 152, HE_BY, HE_BH, 6), back = on(PZ(HE_RISER.h), rectUV(HE_RISER.x0, 0, HE_RISER.x1, HE_BY));
+  let jars = '';
+  HE_STATIONS.forEach(s0 => {
+    if (heKind(s0) !== 'jar') return;
+    const row = HE_ROWS[s0.row], b = row.base;
+    jars += castShadow(heBox(row.x - HE_JAR.dx, s0.y - HE_JAR.dy, b, row.x + HE_JAR.dx, s0.y + HE_JAR.dy, b + HE_JAR.h), b, s0.row === 'front' ? front : back);
+  });
+  const { rx, ry, rz } = st, back0 = heRowOfX(rx) === 'back', z0 = back0 ? HE_RISER.h : HE_BH;
+  const rack = castShadow(heBox(rx - 14, ry - 16, Math.max(rz, z0), rx + 14, ry + 16, rz + 92), z0, back0 ? back : front);
+  return `<g opacity=".45">${jars}</g>${rack}`;
+}
+
+function heRiser() {
+  const { x0, x1, h } = HE_RISER;
+  let s = box(x0, 0, HE_BH, x1, HE_BY, h, { l: '#efe9dc', m: '#d8d0bf', d: '#b3aa98' }, tone, 1.2);
+  for (let y = 40; y < HE_BY; y += 120) s += line([[x1 + .1, y, HE_BH + 10], [x1 + .1, y, h - 10]], .6);
+  return s + hullInk(heBox(x0, 0, HE_BH, x1, HE_BY, h), 2.4);
+}
+
+function scene() {
+  heLabels = [];
+  let s = board(0, 0, 152, HE_BY, HE_BH, 6, BOARD) + heRiser() + heShadows();
+  const draw = i => { const k = heKind(HE_STATIONS[i]); return k === 'jar' ? heJar(i) : k === 'tray' ? heTray(i) : hePad(i); };
+  const idx = row => HE_STATIONS.map((s0, i) => ({ s0, i })).filter(o => o.s0.row === row);
+  s += byDepth(idx('back').map(({ s0, i }) => ({ at: [HE_ROWS.back.x, s0.y, 0], svg: draw(i) })));
+  s += byDepth(idx('front').map(({ s0, i }) => ({ at: [HE_ROWS.front.x, s0.y, 0], svg: draw(i) })));
+  const k = heKind(HE_STATIONS[st.at]);
+  if (k === 'jar' && !heRackInside(st.at)) s += heRack();
+  if (st.ms && st.ms.inJar < 0) s += heLoose();
+  return s + heLabels.join('');
+}
+
+/* ---------- the microscope view: its own panel under the bench ---------- */
+const HE_SC = { cx: 85, cy: 0, r: 108 };
+function heScopeField(lk) {
+  const { cx, cy, r } = HE_SC, pt = ([u, v]) => [cx + u * r, cy + v * r];
+  const poly = pts => 'M' + pts.map(p => pt(p).map(f).join(' ')).join('L') + 'Z';
+  let g = `<rect x="${f(cx - r)}" y="${f(cy - r)}" width="${f(2 * r)}" height="${f(2 * r)}" fill="${lk.bg}"/>`;
+  g += HE_FIELD.fibres.map(fb => `<path d="M${fb.map(p => pt(p).map(f).join(' ')).join('L')}" fill="none" stroke="${lk.fib}" stroke-width="6" stroke-linecap="round"/>`).join('');
+  for (const c of HE_FIELD.cells) {
+    const [nx, ny] = pt([c.nx, c.ny]);
+    g += `<path d="${poly(c.pts)}" fill="${lk.cyto}" stroke="${mix(lk.cyto, '#000000', .18)}" stroke-width=".7"/>`
+       + `<ellipse cx="${f(nx)}" cy="${f(ny)}" rx="${f(c.rx * r)}" ry="${f(c.ry * r)}" transform="rotate(${f(c.rot)} ${f(nx)} ${f(ny)})" fill="${lk.nuc}"/>`;
+  }
+  for (const rb of HE_FIELD.rbcs) { const [x, y] = pt(rb);
+    g += `<circle cx="${f(x)}" cy="${f(y)}" r="${f(.055 * r)}" fill="${lk.rbc}"/><circle cx="${f(x)}" cy="${f(y)}" r="${f(.025 * r)}" fill="${mix(lk.rbc, '#ffffff', .3)}"/>`; }
+  if (lk.haze > 0) g += `<rect x="${f(cx - r)}" y="${f(cy - r)}" width="${f(2 * r)}" height="${f(2 * r)}" fill="#ffffff" opacity="${f(lk.haze)}"/>`;
+  if (st.to === 'mounted' && st.blend >= 1) g += `<path d="M${f(cx - r * .7)} ${f(cy - r * .3)}A${f(r * .8)} ${f(r * .8)} 0 0 1 ${f(cx - r * .25)} ${f(cy - r * .72)}" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" opacity=".6"/>`;
+  return `<clipPath id="heScopeClip"><circle cx="${cx}" cy="${cy}" r="${r}"/></clipPath><g clip-path="url(#heScopeClip)">${g}</g>`
+    + `<circle cx="${cx}" cy="${cy}" r="${r + 4}" fill="none" stroke="${INK}" stroke-width="8"/>`;
+}
+function heScopeTag([X, Y], [cx, cy], text, lit) {
+  const fs = 13, w = text.length * fs * .62 + fs * 1.4, h = fs * 1.8;
+  return `<g class="tag${lit ? ' on' : ''}"><path d="M${f(X)} ${f(Y)}L${f(cx + w / 2)} ${f(cy)}" fill="none" stroke="${INK}" stroke-width="1.1"/><circle cx="${f(X)}" cy="${f(Y)}" r="2.2" fill="${INK}"/>`
+    + `<rect x="${f(cx - w / 2)}" y="${f(cy - h / 2)}" width="${f(w)}" height="${f(h)}" rx="${f(h / 2)}" fill="${lit ? 'var(--accent,#f4b829)' : '#fff4d6'}" stroke="${INK}" stroke-width="1.3"/>`
+    + `<text x="${f(cx)}" y="${f(cy + fs * .36)}" font-size="${fs}" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-weight="800" fill="${INK}">${text}</text></g>`;
+}
+function heDrawScope() {
+  const svg = document.getElementById('scope');
+  if (!svg) return;
+  const closeUp = !!(st.ms && st.ms.onTile && st.busy), cap = document.getElementById('scopeCap');
+  if (cap) cap.textContent = closeUp ? 'Close-up, side view: mounting one slide' : 'Marked slide under the microscope, x40';
+  if (closeUp) { svg.querySelector('#scopeArt').innerHTML = heMountCloseUp(); return; }
+  const lk = heLook(), { cx, cy, r } = HE_SC, pt = ([u, v]) => [cx + u * r, cy + v * r];
+  const near = (list, at, xy) => list.reduce((b, c) => Math.hypot(xy(c)[0] - at[0], xy(c)[1] - at[1]) < Math.hypot(xy(b)[0] - at[0], xy(b)[1] - at[1]) ? c : b);
+  const c0 = near(HE_FIELD.cells, [-.6, .05], c => [c.nx, c.ny]), c1 = near(HE_FIELD.cells.filter(c => c !== c0), [-.45, .42], c => [c.nx, c.ny]);
+  const lit = { nuc: ['haem', 'diff', 'blued'].includes(st.to), pink: ['eosin', 'clear', 'mounted'].includes(st.to) };
+  let s = heScopeField(lk);
+  s += heScopeTag(pt([c0.nx, c0.ny]), [-105, -40], 'NUCLEUS', lit.nuc);
+  s += heScopeTag(pt([c1.nx + (c1.pts[4][0] - c1.nx) * .65, c1.ny + (c1.pts[4][1] - c1.ny) * .65]), [-105, 15], 'CYTOPLASM', lit.pink);
+  s += heScopeTag(pt(near(HE_FIELD.rbcs, [-.6, .76], q => q)), [-105, 70], 'RED CELLS', lit.pink);
+  svg.querySelector('#scopeArt').innerHTML = s;
+}
+
+/* the mounting close-up: a side view big enough to see the drop and the angle of the coverslip */
+function heMountCloseUp() {
+  const m = st.ms, lk = heLook(), txt = (x, y, t, a = 'middle') => `<text x="${x}" y="${y}" font-size="12" text-anchor="${a}" font-family="ui-monospace,Menlo,monospace" font-weight="800" fill="${INK}">${t}</text>`;
+  let s = `<rect x="-185" y="44" width="370" height="22" rx="4" fill="${CERAMIC.m}" stroke="${INK}" stroke-width="1.6"/>` + txt(150, 82, 'TILE');
+  s += `<rect x="-160" y="30" width="320" height="14" fill="${HE_GLASS.l}" stroke="${INK}" stroke-width="1.6"/><rect x="100" y="31" width="58" height="12" fill="#fbfaf5"/>` + txt(-160, 100, 'SLIDE, STILL WET WITH XYLENE', 'start');
+  s += `<rect x="-120" y="26" width="110" height="4" rx="2" fill="${heTissue(lk)}" stroke="${INK}" stroke-width=".8"/>` + txt(-65, 16, 'SECTION');
+  if (m.drop > 0 && m.drop < 1) {
+    const y = -70 + 92 * ease(m.drop);
+    s += `<rect x="-71" y="-112" width="12" height="34" rx="3" fill="${CLEAR.m}" stroke="${INK}" stroke-width="1.2"/><ellipse cx="-65" cy="-116" rx="9" ry="7" fill="${DARK.m}" stroke="${INK}" stroke-width="1.2"/>`
+       + `<circle cx="-65" cy="${f(y)}" r="6" fill="#e2b766" stroke="${INK}" stroke-width="1"/>` + txt(-40, -84, 'DROP OF DPX', 'start');
+  }
+  if (m.dpx > 0) {
+    // the drop spreads under the coverslip and stays on the slide (x -160..160)
+    const k = (m.dpx - .15) / .85, w = 10 + 105 * k, h = 7 * (1 - .6 * k), cx = -65 + 40 * k;
+    s += `<path d="M${f(cx - w)} 26Q${f(cx)} ${f(26 - 2 * h)} ${f(cx + w)} 26Z" fill="#e2b766" fill-opacity=".55" stroke="${INK}" stroke-width=".8"/>`;
+  }
+  if (m.cs > 0) {
+    const t = m.cs, lift = Math.max(0, 1 - t / .3) * 40, ang = (t < .3 ? 1 : 1 - ease((t - .3) / .7)) * 35 * Math.PI / 180;
+    const hx = -150, hy = 22 - lift, ex = hx + 250 * Math.cos(ang), ey = hy - 250 * Math.sin(ang);
+    s += `<path d="M${hx} ${f(hy)}L${f(ex)} ${f(ey)}" stroke="${INK}" stroke-width="5" stroke-linecap="round"/><path d="M${hx} ${f(hy)}L${f(ex)} ${f(ey)}" stroke="#e8f4f6" stroke-width="2.6" stroke-linecap="round"/>`;
+    s += t < 1 ? txt(f(ex - 10), f(ey - 12), 'COVERSLIP', 'end') + txt(-150, -100, 'LOWERED FROM ONE EDGE', 'start') + txt(-150, -84, 'SO NO AIR IS TRAPPED', 'start')
+               : txt(-150, -100, 'SEALED: NO BUBBLES', 'start');
+    if (t < 1) s += `<path d="M${f(ex + 14)} ${f(ey - 6)}q 14 18 2 34" fill="none" stroke="${INK}" stroke-width="1.4"/><path d="M${f(ex + 10)} ${f(ey + 24)}l6 6 4-8" fill="none" stroke="${INK}" stroke-width="1.4"/>`;
+  }
+  return s;
+}
+
+/* ============================================================
+   behaviour: a step is a list of moves; each move eases values over time
+   ============================================================ */
+let ui;
+function heRun(moves, done) {
+  const token = st.token;
+  let i = -1, mv = null, t = 0;
+  const next = () => { if (++i >= moves.length) return false; mv = moves[i](); t = 0; return true; };
+  next();
+  ui.animate(dt => {
+    if (token !== st.token) return false;          // stopped
+    if (st.paused) return true;
+    t += dt; const u = Math.min(1, t / mv.dur); mv.step(u);
+    if (u < 1) return true;
+    if (next()) return true;
+    done(); return false;
+  });
+}
+const heTween = (key, to, dur) => () => { const a = st[key]; return { dur, step: u => { st[key] = a + (to - a) * ease(u); } }; };
+
+function heMovesTo(key, hold, blendHere, quick) {
+  const i = HE_IDX[key], s0 = HE_STATIONS[i], row = HE_ROWS[s0.row], list = [];
+  list.push(() => {
+    const safe = (heRowOfX(st.rx) === 'back' || s0.row === 'back') ? HE_SAFE.back : HE_SAFE.front, a = st.rz;
+    return { dur: a >= safe - .1 ? .01 : .5, step: u => { st.rz = a + (safe - a) * ease(u); } };
+  });
+  list.push(() => {
+    const ax = st.rx, ay = st.ry, d = Math.hypot(row.x - ax, s0.y - ay); st.at = i; st.now = i; st.bathU = 0;
+    return { dur: .25 + d / 600, step: u => { st.rx = ax + (row.x - ax) * ease(u); st.ry = ay + (s0.y - ay) * ease(u); } };
+  });
+  list.push(heTween('rz', row.base + 4, .55));
+  if (quick) list.push(() => ({ dur: 1.2, step: u => { st.rz = row.base + 4 + Math.abs(Math.sin(u * Math.PI * 3)) * 16; st.bathU = u; if (blendHere) st.blend = u; } }));
+  else list.push(() => ({ dur: hold, step: u => { st.bathU = u; if (blendHere) st.blend = u; } }));
+  return list;
+}
+
+function heMountMoves() {
+  const pad = HE_STATIONS[HE_IDX.mount], target = [HE_ROWS.back.x, pad.y - 35, HE_RISER.h + 2];
+  const lerp3 = (a, b, u) => a.map((v, i) => v + (b[i] - v) * u);
+  return [
+    () => { st.ms = { O: [st.rx + 10, st.ry, st.rz + 4], rot: 0, drop: 0, dpx: 0, cs: 0, inJar: st.at }; st.now = HE_IDX.mount;
+            const a = st.ms.O.slice(), b = [a[0], a[1], HE_SAFE.back + 6];
+            return { dur: .8, step: u => { st.ms.O = lerp3(a, b, ease(u)); if (u > .6) st.ms.inJar = -1; } }; },
+    () => { const a = st.ms.O.slice(), b = [target[0], target[1], target[2] + 40];
+            return { dur: 1.2, step: u => { st.ms.O = lerp3(a, b, ease(u)); st.ms.rot = ease(u); } }; },
+    () => { const a = st.ms.O.slice(); return { dur: .5, step: u => { st.ms.O = lerp3(a, target, ease(u)); if (u >= 1) st.ms.onTile = true; } }; },
+    () => ({ dur: 1.4, step: u => { st.ms.drop = u; st.ms.dpx = u >= 1 ? .15 : 0; } }),
+    () => ({ dur: 2.6, step: u => { st.ms.cs = u; st.ms.dpx = .15 + .85 * Math.max(0, (u - .3) / .7); st.blend = u; } }),
+    () => ({ dur: 1.2, step: () => {} }),                     // a moment to see the finished mount
+  ];
+}
+
+function heGo(n, after) {
+  if (st.busy) return ui.flash('The rack is still moving');
+  if (n < st.step) return ui.flash(`${HE_STEPS[n].label} is already done`);
+  if (n > st.step) return ui.flash(heWhyNot(n));
+  const S1 = HE_STEPS[n];
+  st.busy = true; st.from = st.to; st.to = S1.to; st.blend = 0;
+  heNote(`Step ${n + 1} of ${HE_STEPS.length}: ${S1.label}`, S1.doing);
+  let moves = [];
+  if (S1.mount) moves = heMountMoves();
+  else S1.path.forEach((key, j) => { moves = moves.concat(heMovesTo(key, j === 0 ? 1.5 : .6, j === 0, S1.quick && j === 0)); });
+  heRun(moves, () => {
+    st.blend = 1; st.busy = false; st.step++; st.mins += S1.mins;
+    heNote(`Step ${n + 1} of ${HE_STEPS.length}: ${S1.label}, done`, S1.done);
+    if (after) after();
+    else if (st.playing) heWait(1.2, hePlayNext);          // Play was pressed during a manual step
+  });
+}
+function heWhyNot(n) {
+  const key = HE_STEPS[n].to;
+  if (st.step === 0) return 'Wax keeps water-based stains out: dewax first';
+  if (key === 'eosin' && st.step <= 1) return 'Haematoxylin comes first: nuclei, then eosin for the rest';
+  if (key === 'mounted') return 'Water under a coverslip turns it cloudy: dehydrate and clear first';
+  if (key === 'clear' && st.step < 4) return 'Not stained yet: dehydrating now would leave it colourless';
+  return `Next step: ${HE_STEPS[st.step].label}`;
+}
+// tapping a jar runs the step that starts there; tapping the rack runs the next step
+function heTapStation(i) {
+  if (st.playing) return ui.flash('Autoplay is running: pause or stop it first');
+  if (st.step >= HE_STEPS.length) return ui.flash('All done: press Start over');
+  const key = HE_STATIONS[i].key, n = HE_STEPS.findIndex(S1 => S1.path[0] === key);
+  if (n === st.step) return heGo(n);
+  if (n > st.step) return heGo(n);                  // explains why not
+  ui.flash(`Next: ${HE_STEPS[st.step].label}. Tap the ${HE_STATIONS[HE_IDX[HE_STEPS[st.step].path[0]]].label} jar`);
+}
+function heTapRack() {
+  if (st.playing) return ui.flash('Autoplay is running: pause or stop it first');
+  if (st.step >= HE_STEPS.length) return ui.flash('All done: press Start over');
+  heGo(st.step);
+}
+
+/* ---------- player: play, pause, stop, loop ---------- */
+function heWait(sec, then) { heRun([() => ({ dur: sec, step: () => {} })], then); }
+function hePlayNext() {
+  if (!st.playing) return;
+  if (st.step < HE_STEPS.length) return heGo(st.step, () => heWait(1.2, hePlayNext));
+  if (st.loop) return heWait(3, () => { heResetState(); ui.render(); heWait(1, hePlayNext); });
+  st.playing = false; heSyncPlayer();
+}
+function hePlay() {
+  if (st.playing && st.paused) { st.paused = false; return heSyncPlayer(); }
+  if (st.playing) return;
+  if (st.step >= HE_STEPS.length) heResetState();
+  st.playing = true; st.paused = false; heSyncPlayer();
+  if (!st.busy) hePlayNext();
+  else ui.flash('Autoplay picks up after this step');
+}
+function hePause() { if (!st.playing && !st.busy) return; st.paused = !st.paused; heSyncPlayer(); }
+function heStop() { st.token++; st.playing = false; st.paused = false; heResetState(); heSyncPlayer(); ui.render(); }
+function heResetState() {
+  st.token++;
+  Object.assign(st, heFresh());
+  heNote('Ready', 'Paraffin sections on glass slides wait in the start tray. Press Play, a step, or tap the XYLENE jar.');
+}
+function heSyncPlayer() {
+  const pb = document.getElementById('hePlay'), ps = document.getElementById('hePause');
+  if (!pb) return;
+  pb.textContent = st.playing && !st.paused ? '▶ Playing' : '▶ Play';
+  pb.setAttribute('aria-pressed', st.playing && !st.paused);
+  ps.textContent = st.paused ? '▶ Resume' : '❚❚ Pause';
+  document.getElementById('heLoop').checked = st.loop;
+}
+
+const HE_QR_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 29 29" shape-rendering="crispEdges" class="he-qr"><title>QR code: atultiwari.com</title><path class="qrline" stroke="#231e16" d="M2 2.5h7m2 0h1m1 0h5m2 0h7m-25 1h1m5 0h1m1 0h2m1 0h1m1 0h1m1 0h1m2 0h1m5 0h1m-25 1h1m1 0h3m1 0h1m2 0h3m3 0h2m1 0h1m1 0h3m1 0h1m-25 1h1m1 0h3m1 0h1m3 0h2m3 0h2m1 0h1m1 0h3m1 0h1m-25 1h1m1 0h3m1 0h1m1 0h1m1 0h6m2 0h1m1 0h3m1 0h1m-25 1h1m5 0h1m3 0h1m3 0h3m1 0h1m5 0h1m-25 1h7m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h7m-16 1h1m1 0h3m1 0h1m-16 1h1m1 0h1m1 0h1m1 0h1m3 0h1m2 0h1m2 0h1m3 0h1m2 0h1m-24 1h6m2 0h4m1 0h1m2 0h1m1 0h1m5 0h1m-25 1h2m1 0h1m2 0h1m1 0h2m2 0h3m2 0h4m1 0h3m-24 1h2m1 0h2m3 0h1m3 0h2m1 0h2m1 0h1m3 0h1m-24 1h3m1 0h1m1 0h3m1 0h1m2 0h1m3 0h2m2 0h1m1 0h2m-23 1h1m2 0h1m1 0h2m2 0h1m4 0h1m1 0h1m2 0h1m2 0h1m-25 1h1m2 0h2m1 0h2m2 0h1m2 0h1m3 0h3m2 0h3m-24 1h1m1 0h2m2 0h1m3 0h1m1 0h3m4 0h1m2 0h1m-24 1h1m1 0h1m1 0h4m1 0h1m2 0h2m1 0h7m-14 1h1m1 0h3m2 0h2m3 0h2m1 0h2m-25 1h7m3 0h3m2 0h2m1 0h1m1 0h2m1 0h2m-25 1h1m5 0h1m3 0h1m1 0h3m1 0h1m3 0h2m2 0h1m-25 1h1m1 0h3m1 0h1m1 0h2m1 0h4m1 0h6m1 0h2m-25 1h1m1 0h3m1 0h1m4 0h1m3 0h1m3 0h4m-23 1h1m1 0h3m1 0h1m1 0h3m1 0h2m1 0h2m3 0h1m3 0h1m-25 1h1m5 0h1m2 0h1m1 0h1m1 0h2m1 0h1m1 0h1m1 0h2m1 0h1m-24 1h7m1 0h2m2 0h1m1 0h3m1 0h2m3 0h2"/></svg>';
+/* ---------- the panel under the figure: player, microscope, what is happening ---------- */
+function heNote(title, text) {
+  const t = document.getElementById('heNoteTitle'), p = document.getElementById('heNoteText');
+  if (t) { t.textContent = title; p.textContent = text; }
+}
+// the phone layout, used for portrait phones and for phones turned sideways
+const HE_PHONE_CSS = `    .actions{flex-wrap:nowrap!important;overflow-x:auto;scroll-snap-type:x proximity;padding-bottom:6px;-webkit-overflow-scrolling:touch}
+    .actions .stepwrap{scroll-snap-align:start;flex:0 0 auto}
+    .act{min-height:40px;font-size:13px!important}
+    #fig{margin:2px 0 4px}
+    .scope-panel{grid-template-columns:1fr;gap:6px}
+    .player{position:sticky;bottom:0;z-index:5;background:var(--paper);border-top:1px solid var(--rule);padding:8px 0 calc(8px + env(safe-area-inset-bottom));margin:0 0 10px;justify-content:space-between}
+    .player button{flex:1 1 auto;padding:8px 10px;font-size:13px;white-space:nowrap}
+    .player{flex-wrap:wrap;row-gap:6px} #lbl{flex:0 0 auto!important}
+    .toast{position:fixed!important;left:12px!important;right:12px;top:auto!important;bottom:78px;max-width:none!important}
+    .now-chip{padding:6px 10px 6px 7px;gap:8px;border-radius:12px;max-width:88%}
+    .he-qr-link{position:static;margin:10px auto 0;width:max-content}
+    .he-qr-link svg{width:64px;height:64px}
+    .now-chip .v{font-size:14px}
+    .now-chip .n{width:26px;height:26px;font-size:12px}
+    /* option B: follow the rack. Sticky step strip, close-up bench, station rail, card, short note, sticky player */
+    header h1{font-size:15px} header span{display:none}
+    .actions{position:sticky;top:0;z-index:6;background:var(--paper);margin:0 -12px!important;padding:6px 12px 6px!important;scroll-behavior:smooth}
+    .he-cam{position:relative;width:100%}
+    #fig{height:44vh;overflow:hidden!important;border:1.5px solid var(--rule);border-radius:12px;background:color-mix(in srgb,var(--paper) 70%,#fff)}
+    .he-rail{display:flex!important}
+    .now-chip{position:static!important;max-width:none!important;width:100%;margin:8px 0 4px;box-shadow:2px 2px 0 var(--ink)}
+    .he-inset{display:block!important}
+    .scope-panel>div:first-child{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+    .note .k{margin-top:4px}
+    .note p{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+    .note.open p{display:block}
+    .he-more{display:inline-block!important}
+    .player label,#lbl{display:none!important}
+    .he-phone-only{display:inline-block!important}
+    .he-qr-link svg{display:none}
+    .he-qr-link span{font-size:13px;color:var(--ink);text-decoration:underline;letter-spacing:.02em}`;
+const HE_CSS = `
+  .player{width:100%;max-width:760px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:2px 0 12px}
+  .player button{font-size:13px;padding:7px 16px;min-height:38px}
+  .player button[aria-pressed=true]{background:var(--ink);color:var(--paper)}
+  .player label{display:flex;align-items:center;gap:6px;margin-left:4px;color:var(--muted);text-transform:uppercase;font-size:11px;letter-spacing:.08em}
+  .player input{width:18px;height:18px;accent-color:var(--ink)}
+  .scope-panel{width:100%;max-width:760px;display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:18px;align-items:center;margin-bottom:18px}
+  .scope-panel svg{width:100%;height:auto;display:block}
+  .scope-cap{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);text-align:center;margin-top:2px}
+  .note .k{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-top:10px}
+  .now-chip{position:absolute;right:0;bottom:4px;z-index:2;display:flex;align-items:center;gap:10px;background:var(--paper);border:2px solid var(--ink);border-radius:14px;box-shadow:3px 3px 0 var(--ink);padding:8px 14px 8px 10px;max-width:min(380px,72%)}
+  .now-chip.busy{border-left:8px solid var(--accent,#f4b829)}
+  .now-chip .n{flex:0 0 auto;width:32px;height:32px;border-radius:50%;background:var(--ink);color:var(--paper);display:grid;place-items:center;font-weight:800;font-size:14px}
+  .now-chip .k{display:block;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  .now-chip .v{display:block;font-size:17px;font-weight:800;line-height:1.15}
+  .now-chip .t{display:block;font-size:11px;color:var(--muted);margin-top:2px;font-variant-numeric:tabular-nums}
+  .note h2{font-size:14px;margin:4px 0 4px;font-weight:800}
+  .note p{margin:0;font-size:13px;line-height:1.5}
+  .act.next{background:var(--accent,#f4b829);animation:hePulse 1.4s ease-in-out infinite}
+  .act.done{opacity:.5}
+  @keyframes hePulse{50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--accent,#f4b829) 45%,transparent)}}
+  html.nolabels #scope .tag{display:none}
+  .controls,.made-with{display:none!important}
+  #lbl::before{content:'Labels ';}
+  .he-footer{width:100%;max-width:760px;text-align:center;font-size:12px;letter-spacing:.04em;color:var(--muted);margin-top:6px}
+  .he-footer .heart{color:#d63a4a;font-size:14px}
+  .he-footer{position:relative}
+  .he-qr-link{position:absolute;right:0;bottom:0;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--muted);text-decoration:none;font-size:10px;letter-spacing:.06em}
+  .he-qr-link svg{width:76px;height:76px;background:#fbf8f0;border:1.5px solid var(--ink);border-radius:8px;padding:4px}
+  .he-qr-link:hover{color:var(--ink)}
+  @media (min-width:900px){header,.stage,#fig,.player,.scope-panel,.he-footer{max-width:1040px!important}}
+  /* laptops and wider: the bench on the left, the microscope and notes on the right (the same layout as the video) */
+  @media (min-width:1100px){
+    body{display:grid!important;grid-template-columns:minmax(0,1.45fr) minmax(0,1fr);column-gap:40px;align-items:start;padding:28px max(40px,calc((100vw - 1560px) / 2)) 32px!important}
+    .sb-switch{grid-row:1}
+    header{grid-column:1 / 3;grid-row:2}
+    .stage{grid-column:1;grid-row:3}
+    .player{grid-column:1;grid-row:4}
+    .scope-panel{grid-column:2;grid-row:3 / span 2;grid-template-columns:1fr!important;align-self:center;gap:10px!important}
+    .he-footer{grid-column:1 / 3;grid-row:5}
+    header,.stage,#fig,.player,.scope-panel,.he-footer{max-width:none!important}
+    header h1{font-size:22px}
+  }
+  @media (prefers-reduced-motion:reduce){.act.next{animation:none}}
+  @media (max-width:560px){
+${HE_PHONE_CSS}
+  }
+  @media (orientation:landscape) and (max-height:500px) and (min-width:561px){
+    body{padding:10px 16px 16px!important} .actions .cap{display:none}
+    .stats{position:static!important;flex-direction:row!important;justify-content:flex-end;gap:18px;margin-bottom:4px}
+    .actions{position:static;max-width:none!important;flex-direction:row!important;gap:6px!important;margin:4px 0!important}
+    .act{font-size:12px;padding:4px 11px}
+${HE_PHONE_CSS}
+    #fig{height:64vh} .scope-panel{grid-template-columns:1fr!important}
+  }
+  .he-rail,.he-inset,.he-more,.he-phone-only{display:none}
+  .he-rail{gap:5px;overflow-x:auto;padding:8px 2px 4px;scroll-behavior:smooth;-webkit-overflow-scrolling:touch}
+  .he-rail button{flex:0 0 auto;width:34px;height:34px;padding:0;border-radius:9px;font:inherit;font-size:12px;font-weight:800;color:var(--ink);border:1.5px solid var(--ink)}
+  .he-rail button.done{opacity:.45}
+  .he-rail button.on{outline:3px solid var(--accent,#f4b829);outline-offset:1px}
+  .he-inset{position:absolute;top:8px;right:8px;width:58px;height:58px;padding:0;border:0;background:none;z-index:3;transition:width .25s,height .25s}
+  .he-inset svg{width:100%;height:100%;display:block}
+  .he-inset.big{width:72%;height:auto;aspect-ratio:1}
+  .he-inset.wide{width:94%;height:auto;aspect-ratio:400/236;background:var(--paper);border:1.5px solid var(--ink);border-radius:10px;box-shadow:2px 2px 0 var(--ink)}
+  .he-more{font:inherit;font-size:12px;border:0;background:none;padding:2px 0;color:var(--ink);text-decoration:underline;min-height:0}
+  @media (prefers-reduced-motion:reduce){.he-rail,.actions{scroll-behavior:auto}.he-inset{transition:none}}`;
+function heBuildPanel() {
+  const style = document.createElement('style'); style.textContent = HE_CSS; document.head.appendChild(style);
+  const player = document.createElement('div'); player.className = 'player'; player.setAttribute('role', 'group'); player.setAttribute('aria-label', 'Animation');
+  player.innerHTML = `<button id="hePlay" aria-pressed="false">▶ Play</button><button id="hePause">❚❚ Pause</button><button id="heStop">■ Stop</button><label><input type="checkbox" id="heLoop"> Loop</label>`;
+  const panel = document.createElement('section'); panel.className = 'scope-panel';
+  panel.innerHTML = `<div><svg id="scope" viewBox="-200 -118 400 236" role="img" aria-label="Microscope view of the marked slide"><defs>${filterFor(.62).replace('id="hand"', 'id="scopeHand"').replace('id="wob"', 'id="scopeWob"')}</defs><g id="scopeArt" filter="url(#scopeHand)"></g></svg><div class="scope-cap" id="scopeCap">Marked slide under the microscope, x40</div></div>`
+    + `<div class="note" aria-live="polite"><div class="k">What is happening</div><h2 id="heNoteTitle"></h2><p id="heNoteText"></p></div>`;
+  const stage = document.querySelector('.stage');
+  const chip = document.createElement('div'); chip.className = 'now-chip'; chip.setAttribute('aria-live', 'polite');
+  chip.innerHTML = '<span class="n" id="heNowNum">1</span><span><span class="k">Active jar</span><span class="v" id="heNow">Start tray</span><span class="t" id="heNowTime"></span></span>';
+  stage.appendChild(chip);
+  stage.after(player); player.after(panel);
+  document.getElementById('hePlay').onclick = hePlay;
+  document.getElementById('hePause').onclick = hePause;
+  document.getElementById('heStop').onclick = heStop;
+  document.getElementById('heLoop').onchange = e => { st.loop = e.target.checked; };
+  // footer: one credit line; the labels switch moves into the player row, the wobble and colour controls go
+  player.appendChild(document.getElementById('lbl'));
+  document.getElementById('lbl').title = 'Labels on the microscope view';
+  const foot = document.createElement('footer'); foot.className = 'he-footer';
+  foot.innerHTML = 'Made with <span class="heart" aria-label="love">&#9829;</span> and a passion for teaching pathology &middot; Dr. Atul Tiwari';
+  document.body.appendChild(foot);
+  // a QR code for the author's website in the bottom-right corner (generated offline with segno; decodes to the URL)
+  const qr = document.createElement('a'); qr.className = 'he-qr-link'; qr.href = 'https://atultiwari.com/'; qr.target = '_blank'; qr.rel = 'noopener';
+  qr.innerHTML = HE_QR_SVG + '<span>atultiwari.com</span>';
+  foot.appendChild(qr);
+}
+function heSyncPanel() {
+  const now = document.getElementById('heNow');
+  const sNow = HE_STATIONS[st.ms ? HE_IDX.mount : st.now];
+  if (now) { now.textContent = sNow.name; document.getElementById('heNowNum').textContent = sNow.num; now.parentElement.parentElement.classList.toggle('busy', st.busy);
+    const secs = st.ms ? 0 : HE_SECS[sNow.key] || 0, mmss = v => `${Math.floor(v / 60)}:${String(Math.round(v % 60)).padStart(2, '0')}`;
+    document.getElementById('heNowTime').textContent = secs ? `${mmss(secs * Math.min(1, st.bathU))} of ${mmss(secs)} in this bath` : 'no bath time'; }
+  hePhoneSync();
+  document.querySelectorAll('#btns .act').forEach((b, i) => {
+    b.classList.toggle('done', i < st.step && i < HE_STEPS.length);
+    b.classList.toggle('next', i === st.step && i < HE_STEPS.length && !st.busy);
+  });
+  heDrawScope();
+}
+
+/* ---------- phone layout ("option B", he-mobile-spec.md): follow the rack up close ---------- */
+const hePhone = () => matchMedia('(max-width:560px), (orientation:landscape) and (max-height:500px)').matches;
+let heVB0 = null, heVB = null;                     // the full-bench viewBox, and the eased close-up one
+// the follow camera: frame the rack's live position plus one jar either side, eased; Bench shows the whole bench
+function heCam() {
+  const svg = document.getElementById('fig');
+  if (!svg || !svg.viewBox.baseVal) return;
+  if (!heVB0) { const v = svg.viewBox.baseVal; heVB0 = { x: v.x, y: v.y, w: v.width, h: v.height }; heVB = { ...heVB0 }; }
+  const box = svg.getBoundingClientRect(), aspect = box.width && box.height ? box.width / box.height : heVB0.w / heVB0.h;
+  let target = heVB0;
+  if (hePhone() && !st.benchView) {
+    const pad = st.ms ? HE_STATIONS[HE_IDX.mount] : null;
+    const cx = pad ? HE_ROWS.back.x : st.rx, cy = pad ? pad.y : st.ry;
+    const k = Math.min(1, Math.max(0, (HE_ROWS.front.x - cx) / (HE_ROWS.front.x - HE_ROWS.back.x)));
+    const base = HE_BH + k * (HE_RISER.h - HE_BH), pts = [];
+    for (const x of [cx - 26, cx + 26]) for (const y of [cy - HE_P * 1.5, cy + HE_P * 1.5]) for (const z of [base, base + HE_JAR.h + 12]) pts.push(P(x, y, z));
+    const xs = pts.map(q => q[0]), ys = pts.map(q => q[1]);
+    let w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);
+    const mx = (Math.max(...xs) + Math.min(...xs)) / 2, my = (Math.max(...ys) + Math.min(...ys)) / 2;
+    if (w / h < aspect) w = h * aspect; else h = w / aspect;
+    w *= 1.06; h *= 1.06;
+    target = { x: mx - w / 2, y: my - h / 2, w, h };
+  } else if (hePhone()) {
+    const w = Math.max(heVB0.w, heVB0.h * aspect), h = w / aspect;
+    target = { x: heVB0.x + (heVB0.w - w) / 2, y: heVB0.y + (heVB0.h - h) / 2, w, h };
+  }
+  const reduce = matchMedia('(prefers-reduced-motion:reduce)').matches, a = reduce ? 1 : .2;
+  for (const key of ['x', 'y', 'w', 'h']) heVB[key] += (target[key] - heVB[key]) * a;
+  svg.setAttribute('viewBox', `${f(heVB.x)} ${f(heVB.y)} ${f(heVB.w)} ${f(heVB.h)}`);
+  INK_K = heVB.w / INK_REF_VB;                      // line weight and pill size stay the same on screen at any zoom
+}
+// keep the active step and station centred in their strips (scrolls only sideways, never the page)
+function heCentre(container, el) {
+  if (!container || !el) return;
+  const left = el.offsetLeft - (container.clientWidth - el.offsetWidth) / 2;
+  container.scrollTo({ left: Math.max(0, left), behavior: matchMedia('(prefers-reduced-motion:reduce)').matches ? 'auto' : 'smooth' });
+}
+function heBuildPhone() {
+  const svg = document.getElementById('fig'), cam = document.createElement('div'); cam.className = 'he-cam';
+  svg.before(cam); cam.appendChild(svg);
+  const inset = document.createElement('button'); inset.className = 'he-inset'; inset.setAttribute('aria-label', 'Microscope view: tap to enlarge');
+  inset.innerHTML = '<svg id="heInsetSvg" viewBox="-27 -112 224 224"><use href="#scopeArt"/></svg>';
+  inset.onclick = () => { inset.classList.toggle('big'); };
+  cam.appendChild(inset);
+  const rail = document.createElement('div'); rail.className = 'he-rail'; rail.setAttribute('aria-label', 'Stations 1 to 17');
+  HE_STATIONS.forEach((s0, i) => {
+    const b = document.createElement('button'), liq = HE_LIQ[s0.liq];
+    b.textContent = s0.num; b.title = `${s0.num}. ${s0.name}`;
+    b.style.background = liq ? mix(liq[0], '#ffffff', .45) : '#efe9dc';
+    b.onclick = () => heTapStation(i);
+    rail.appendChild(b);
+  });
+  cam.after(rail);
+  const more = document.createElement('button'); more.className = 'he-more'; more.textContent = 'More';
+  more.onclick = () => { const n = document.querySelector('.note'); n.classList.toggle('open'); more.textContent = n.classList.contains('open') ? 'Less' : 'More'; };
+  document.getElementById('heNoteText').after(more);
+  const bench = document.createElement('button'); bench.className = 'he-phone-only'; bench.id = 'heBench'; bench.textContent = '⊞ Bench';
+  bench.onclick = () => { st.benchView = !st.benchView; bench.textContent = st.benchView ? '⊡ Close-up' : '⊞ Bench'; ui.render(); };
+  document.getElementById('heStop').after(bench);
+}
+let heLastActive = -1, heLastStep = -1;
+function hePhoneSync() {
+  const rail = document.querySelector('.he-rail');
+  if (!rail) return;
+  const active = st.ms ? HE_IDX.mount : st.now;
+  [...rail.children].forEach((b, i) => { b.classList.toggle('on', i === active); b.classList.toggle('done', i < active); });
+  const inset = document.querySelector('.he-inset'), closeUp = !!(st.ms && st.ms.onTile && st.busy);
+  inset.classList.toggle('wide', closeUp);
+  document.getElementById('heInsetSvg').setAttribute('viewBox', closeUp ? '-200 -118 400 236' : '-27 -112 224 224');
+  if (!hePhone()) return;
+  if (active !== heLastActive) { heLastActive = active; heCentre(rail, rail.children[active]); }
+  if (st.step !== heLastStep) { heLastStep = st.step; const acts = document.querySelectorAll('#btns .stepwrap'); heCentre(document.getElementById('btns'), acts[Math.min(st.step, acts.length - 1)]); }
+}
+
+ui = mountFigure({
+  fig: '02', title: 'H&E staining', hint: 'tap the next jar or step, or press Play',
+  size: [152, HE_BY, 300], palette: 'cobalt', state: st,
+  scene: () => scene(),
+  buttonsLabel: 'Staining steps',
+  buttons: [...HE_STEPS.map((S1, n) => ({ label: `${n + 1}. ${S1.label}`, onClick: () => st.playing ? ui.flash('Autoplay is running: pause or stop it first') : heGo(n) })),
+            { label: 'Start over', onClick: heStop }],
+  stats: s1 => [
+    { label: 'Step', value: `${s1.step} / ${HE_STEPS.length}` },
+    { label: 'Lab time', value: `${Math.round(s1.mins)} min`, small: true },
+  ],
+  acts: { station: (s1, el) => heTapStation(+el.dataset.i), rack: () => heTapRack() },
+  params: (s1, q) => {
+    const k = HE_STEPS.findIndex(S1 => S1.to === q.get('state'));
+    if (k < 0) return;
+    const S1 = HE_STEPS[Math.min(k, 5)], last = HE_IDX[S1.path[S1.path.length - 1]], s0 = HE_STATIONS[last];
+    Object.assign(s1, { step: k + 1, from: HE_STEPS[k].to, to: HE_STEPS[k].to, blend: 1, at: last, now: last,
+      rx: HE_ROWS[s0.row].x, ry: s0.y, rz: HE_ROWS[s0.row].base + 4, bathU: 1, mins: HE_STEPS.slice(0, k + 1).reduce((a, b) => a + b.mins, 0) });
+    if (HE_STEPS[k].mount) { const pad = HE_STATIONS[HE_IDX.mount]; s1.ms = { O: [HE_ROWS.back.x, pad.y - 35, HE_RISER.h + 2], rot: 1, drop: 1, dpx: 1, cs: 1, inJar: -1 }; }
+  },
+});
+const heBaseRender = ui.render;
+ui.render = () => { heCam(); heBaseRender(); heSyncPanel(); };
+heBuildPanel();
+heBuildPhone();
+// a plain heading: this page stands alone, it is not a numbered figure in a set
+document.querySelector('header h1').textContent = 'H&E Staining · Sketchbook';
+document.title = 'H&E Staining · Sketchbook';
+if (!st.step) heNote('Ready', 'Paraffin sections on glass slides wait in the start tray. Press Play, a step, or tap the XYLENE jar.');
+else heNote(`After step ${st.step}`, HE_STEPS[st.step - 1].done);
+heSyncPlayer(); ui.render();
+// labels on the microscope view start off; ?labels=1 turns them on
+if (!new URLSearchParams(location.search).has('labels')) document.getElementById('lbl').click();
+setInterval(() => { if (!st.busy) ui.render(); }, 120);           // keeps the tap-water ripples moving
+if (new URLSearchParams(location.search).get('autoplay') === '1') { st.loop = true; heSyncPlayer(); hePlay(); }
+</script>
+</body>
+</html>

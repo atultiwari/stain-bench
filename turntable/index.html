@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>H&amp;E Staining · Turntable</title>
+<style>
+  :root{--paper:#f2efe7;--ink:#231e16;--muted:#857d6e;--rule:#ddd6c8;--accent:#76a0e2;--brass:#c9a14a;--heart:#d0342c;
+    --stage-h:clamp(420px,62vh,640px);--side-w:270px}
+  *{box-sizing:border-box} html,body{margin:0}
+  body{background:var(--paper);color:var(--ink);font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;
+    display:flex;flex-direction:column;align-items:center;padding:14px 16px 8px;overflow-x:hidden;min-height:100vh}
+  header,.layout,.foot{width:100%;max-width:1400px}
+  header{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+  header h1{font-size:13px;font-weight:700;margin:0;letter-spacing:.02em} header span{color:var(--muted)}
+  button{font:inherit;color:var(--ink);background:var(--paper);border:1.5px solid var(--ink);border-radius:999px;padding:5px 14px;cursor:pointer}
+  button:hover{background:color-mix(in srgb,var(--paper) 90%,var(--ink))}
+  button:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+
+  .layout{display:grid;grid-template-columns:minmax(0,1fr);gap:10px 22px;margin-top:6px}
+  .figwrap{position:relative}
+  .stage{position:relative;height:var(--stage-h);border-radius:14px;overflow:hidden}
+  #gl{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:grab}
+  #gl:active{cursor:grabbing}
+  .actions{position:absolute;left:0;top:0;z-index:2;display:flex;flex-direction:column;align-items:flex-start;gap:7px;pointer-events:none}
+  .actions .cap{color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin:0 0 2px}
+  .actions button{pointer-events:auto;white-space:nowrap}
+  .act.next{background:var(--accent);animation:hePulse 1.4s ease-in-out infinite}
+  .act.done{opacity:.5}
+  @keyframes hePulse{50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 45%,transparent)}}
+  .stats{position:absolute;right:0;top:0;z-index:2;text-align:right;pointer-events:none}
+  .stat .k{display:block;font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  .stat .v{display:block;font-size:34px;font-weight:800;line-height:1.05;font-variant-numeric:tabular-nums}
+  .stat.small .v{font-size:20px}
+  .stat+.stat{margin-top:8px}
+  .toast{position:absolute;left:50%;top:8px;transform:translateX(-50%);z-index:4;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;background:var(--paper);
+    border:1.5px solid var(--ink);border-radius:8px;padding:5px 10px;box-shadow:2px 2px 0 var(--ink);opacity:0;transition:opacity .2s;pointer-events:none;max-width:min(420px,90%);text-align:center}
+  .toast.on{opacity:1}
+  .msg{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:24px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;font-size:12px}
+
+  /* round camera buttons, bottom-right of the canvas */
+  .cam{position:absolute;right:6px;bottom:6px;z-index:3;display:flex;gap:5px;padding:5px;border-radius:999px;
+    background:color-mix(in srgb,var(--paper) 86%,transparent);border:1px solid var(--rule)}
+  .cam button{width:32px;height:32px;padding:0;border-radius:50%;display:grid;place-items:center;border-width:1.3px}
+  .cam button[aria-pressed=true]{background:var(--ink);color:var(--paper)}
+  .cam svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+  .cam .sep{width:1px;background:var(--rule);margin:4px 1px}
+  html.no-fs .cam [data-cam=full]{display:none}
+  .figwrap:fullscreen{background:var(--paper);padding:16px;display:flex;flex-direction:column}
+  .figwrap:fullscreen .stage{flex:1;height:auto}
+  .figwrap:-webkit-full-screen{background:var(--paper);padding:16px;display:flex;flex-direction:column}
+  .figwrap:-webkit-full-screen .stage{flex:1;height:auto}
+
+  .toolbar{display:flex;justify-content:space-between;align-items:center;gap:8px 16px;flex-wrap:wrap;margin-top:6px}
+  .player,.views{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .player button{font-size:13px;padding:6px 15px;min-height:36px}
+  .player button[aria-pressed=true]{background:var(--ink);color:var(--paper)}
+  .player label{display:flex;align-items:center;gap:6px;margin-left:4px;color:var(--muted);text-transform:uppercase;font-size:11px;letter-spacing:.08em}
+  .player input{width:18px;height:18px;accent-color:var(--ink)}
+  .views .k{color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin-right:2px}
+  .views button{font-size:12px;padding:4px 10px}
+
+  /* the microscope, the active jar and the note */
+  .side{display:grid;grid-template-columns:200px minmax(0,1fr);gap:8px 18px;align-items:start;align-content:start}
+  .scope-wrap{grid-row:span 2}
+  #scope{width:100%;height:auto;display:block}
+  .scope-cap{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);text-align:center;margin-top:4px}
+  .now-card{display:flex;align-items:center;gap:10px;background:#fbf8f0;border:2px solid var(--ink);border-radius:14px;box-shadow:3px 3px 0 var(--ink);padding:9px 12px}
+  .now-card.busy{border-left:8px solid var(--accent)}
+  .now-card .n{flex:0 0 auto;width:38px;height:38px;border-radius:9px;background:var(--ink);color:var(--paper);display:grid;place-items:center;font-weight:800;font-size:16px}
+  .now-card .sw{flex:0 0 auto;width:7px;align-self:stretch;border-radius:4px;border:1px solid var(--ink)}
+  .now-card .k{display:block;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  .now-card .v{display:block;font-size:15px;font-weight:800;line-height:1.2}
+  .now-card .t{display:block;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;margin-top:2px}
+  .note .k{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+  .note h2{font-size:13.5px;margin:3px 0;font-weight:800}
+  .note p{margin:0;font-size:12.5px;line-height:1.5}
+  .foot{text-align:center;color:var(--muted);font-size:12px;margin-top:auto;padding:10px 0 4px}
+  .foot .heart{color:var(--heart)}
+  .foot{position:relative}
+  .he-qr-link{position:absolute;right:0;bottom:0;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--muted);text-decoration:none;font-size:10px;letter-spacing:.06em}
+  .he-qr-link svg{width:76px;height:76px;background:#fbf8f0;border:1.5px solid var(--ink);border-radius:8px;padding:4px}
+  .phone-only,.he-site-link,.scope-mini,.cam .cam-more,.rail,.note-more{display:none}
+
+  @media (min-width:1100px), (orientation:landscape) and (max-height:500px){
+    :root{--stage-h:clamp(420px,calc(100vh - 196px),760px)}
+    .layout{grid-template-columns:minmax(0,1fr) var(--side-w)}
+    .side{grid-template-columns:1fr;gap:12px;padding-top:4px}
+    .scope-wrap{grid-row:auto;width:min(100%,232px);justify-self:center}
+  }
+  @media (max-width:1099px) and (orientation:portrait), (max-width:1099px) and (min-height:501px){ .figcol{display:contents} }
+  @media (prefers-reduced-motion:reduce){.act.next{animation:none}}
+  @media (max-width:760px){
+    :root{--stage-h:min(420px,92vw)}
+    body{padding:14px 16px 0}
+    .actions,.stats{position:static;pointer-events:auto}
+    .actions{flex-direction:row;overflow-x:auto;scroll-snap-type:x proximity;padding:2px 0 8px;gap:6px;-webkit-overflow-scrolling:touch}
+    .actions .cap{display:none}
+    .actions button{scroll-snap-align:start;flex:0 0 auto;min-height:40px;font-size:13px}
+    .stats{display:flex;gap:18px;align-items:baseline;text-align:left;margin:4px 0 2px}
+    .stat+.stat{margin-top:0}
+    .stat .v{font-size:22px;display:inline} .stat.small .v{font-size:16px}
+    .stat .k{display:inline;margin-right:6px}
+    .cam{left:50%;right:auto;transform:translateX(-50%);gap:3px;padding:4px}
+    .cam button{width:30px;height:30px}
+    .cam .sep{display:none}
+    .side{grid-template-columns:1fr;justify-items:stretch}
+    .scope-wrap{grid-row:auto;width:min(100%,250px);justify-self:center}
+    .toolbar{order:0}
+    .player{position:sticky;bottom:0;z-index:5;background:var(--paper);border-top:1px solid var(--rule);width:100%;
+      padding:8px 0 calc(8px + env(safe-area-inset-bottom));justify-content:space-between}
+    .player button{flex:1 1 0;padding:8px 6px;font-size:13px}
+  }
+
+  /* ---------- phones in portrait: follow the rack (../he-mobile-spec.md) ---------- */
+  @media (max-width:560px){
+    :root{--stage-h:44svh}
+    body{padding:10px 12px 0}
+    header h1{font-size:15px} header .hint{display:none}
+    .layout{margin-top:4px;gap:8px}
+    .figwrap{display:contents}
+    .actions{order:1;position:sticky;top:0;z-index:6;background:var(--paper);margin:0 -12px;padding:6px 12px 6px;scroll-padding:0 12px;
+      border-bottom:1px solid var(--rule);scrollbar-width:none}
+    .actions::-webkit-scrollbar{display:none}
+    .actions button{min-height:40px}
+    .stats{order:2;margin:0}
+    .stage{order:3}
+    .side{order:4}
+    .toolbar{order:5;position:sticky;bottom:0;z-index:6;margin:0 -12px;padding:0 12px;background:var(--paper)}
+    .player{border-top:1px solid var(--rule);padding:8px 0 calc(8px + env(safe-area-inset-bottom));flex-wrap:nowrap;gap:6px}
+    .player button{min-height:44px;padding:8px 4px;font-size:13px}
+    .player .loop,.views{display:none}
+    .phone-only{display:inline-block}
+    .player #heBench[aria-pressed=true]{background:var(--ink);color:var(--paper)}
+    /* compact camera buttons: one round button opens the rest, as a column */
+    .cam{left:auto;right:6px;bottom:6px;transform:none;flex-direction:column-reverse;padding:3px;gap:3px;background:transparent;border:0}
+    .cam button{width:34px;height:34px;display:none;background:var(--paper)}
+    .cam .cam-more{display:grid}
+    .cam.open button{display:grid}
+    .cam.open{background:color-mix(in srgb,var(--paper) 88%,transparent);border:1px solid var(--rule)}
+    .cam [data-cam=full]{display:none!important}
+    /* the microscope: a small inset, tap to enlarge */
+    .scope-wrap{display:none}
+    .scope-mini{display:block;position:absolute;right:8px;top:8px;z-index:3;width:56px;height:56px;padding:0;border:0;background:transparent;border-radius:50%;
+      transition:width .25s,height .25s}
+    .scope-mini svg{width:100%;height:100%;display:block}
+    .scope-mini.big{width:min(70%,calc(var(--stage-h) - 20px));height:auto;aspect-ratio:1}
+    .scope-mini.wide{border-radius:10px;background:var(--paper);border:1.5px solid var(--ink);aspect-ratio:400/260;height:auto;width:min(70%,260px)}
+    .toast{top:auto;bottom:8px}
+    /* the station rail */
+    .rail{position:relative;display:flex;gap:5px;overflow-x:auto;padding:2px 2px 8px;scrollbar-width:none;scroll-padding:0 40%}
+    .rail::-webkit-scrollbar{display:none}
+    .rail button{flex:0 0 auto;width:34px;height:40px;padding:0;border-radius:8px;font-weight:800;font-size:13px;border-width:1.3px}
+    .rail button.done{opacity:.55}
+    .rail button.on{outline:3px solid var(--accent);outline-offset:1px;box-shadow:2px 2px 0 var(--ink)}
+    .side{display:flex;flex-direction:column;align-items:stretch;gap:10px;min-width:0}
+    .rail,.actions,.toolbar,.stats,.stage{min-width:0}
+    .now-card .v{font-size:15px}
+    .note p{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+    .note.open p{display:block}
+    .note-more{display:inline-block;margin-top:4px;font-size:12px;padding:3px 10px}
+    .he-qr-link{display:none}
+    .he-site-link{display:inline-block;margin:8px auto 0;color:var(--ink);font-weight:700}
+    .foot{display:flex;flex-direction:column;align-items:center;padding:12px 0 16px}
+  }
+  /* phones on their side: the laptop layout, squeezed */
+  @media (orientation:landscape) and (max-height:500px){
+    :root{--stage-h:calc(100vh - 92px);--side-w:210px}
+    body{padding:6px 12px 0}
+    header .hint{display:none}
+    .actions{gap:4px} .actions .cap{display:none}
+    .actions button{font-size:11px;padding:3px 9px}
+    .stat .v{font-size:20px} .stat.small .v{font-size:13px}
+    .toolbar{margin-top:2px} .player button{min-height:30px;padding:3px 10px;font-size:12px} .views{display:none}
+    .side{gap:6px} .scope-wrap{width:96px!important} .scope-cap{display:none}
+    .now-card{padding:6px 8px} .now-card .v{font-size:12.5px} .now-card .n{width:30px;height:30px;font-size:13px}
+    .note p{font-size:11px;line-height:1.4} .note h2{font-size:12px}
+    .note p{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden} .note.open p{display:block}
+    .note-more{display:inline-block;margin-top:2px;font-size:11px;padding:1px 8px}
+    .foot{padding:4px 0} .he-qr-link{display:none}
+    .cam button{width:26px;height:26px} .cam svg{width:14px;height:14px}
+  }
+</style>
+<script src="../shared/switcher.js" defer></script>
+</head>
+<body>
+<header>
+  <h1>H&amp;E Staining · Turntable</h1>
+  <span class="hint">drag to turn · pinch or scroll to zoom · double-tap empty space to reset</span>
+</header>
+
+<main class="layout">
+  <div class="figcol">
+    <div class="figwrap" id="figwrap">
+      <nav class="actions" id="btns" aria-label="Staining steps"><div class="cap">Staining steps</div></nav>
+      <div class="stats" aria-live="polite">
+        <div class="stat"><span class="k">Step</span><span class="v" id="statStep">0 / 7</span></div>
+        <div class="stat small"><span class="k">Lab time</span><span class="v" id="statTime">0 min</span></div>
+      </div>
+      <div class="stage" id="stage">
+        <canvas id="gl" aria-label="3D staining bench. Drag to rotate, pinch or scroll to zoom, tap a jar or the rack to run the next step."></canvas>
+        <button class="scope-mini" id="scopeMini" aria-label="Microscope view: tap to enlarge" aria-pressed="false"><svg id="scopeMiniSvg" viewBox="-114 -114 228 228" aria-hidden="true"><g id="scopeMiniArt"></g></svg></button>
+        <div class="msg" id="msg">Loading the 3D bench…</div>
+        <div class="toast" id="toast" role="status"></div>
+        <div class="cam" id="cam" role="group" aria-label="Camera">
+          <button class="cam-more" id="camMore" title="Camera buttons" aria-label="Camera buttons" aria-expanded="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 6h13M3.5 14h13"/><circle cx="7.5" cy="6" r="2" fill="#fbf8f0"/><circle cx="12.5" cy="14" r="2" fill="#fbf8f0"/></svg></button>
+          <button data-cam="rot-l" title="Turn left" aria-label="Turn left"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.5 4v4.5H9"/><path d="M4.8 8.3A6 6 0 1 1 6 14.5"/></svg></button>
+          <button data-cam="rot-r" title="Turn right" aria-label="Turn right"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 4v4.5H11"/><path d="M15.2 8.3A6 6 0 1 0 14 14.5"/></svg></button>
+          <button data-cam="tilt-u" title="Tilt up: look from higher" aria-label="Tilt up: look from higher"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 12.5l5-5 5 5"/></svg></button>
+          <button data-cam="tilt-d" title="Tilt down: look from lower" aria-label="Tilt down: look from lower"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 7.5l5 5 5-5"/></svg></button>
+          <span class="sep"></span>
+          <button data-cam="zoom-in" title="Zoom in" aria-label="Zoom in"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4.5v11M4.5 10h11"/></svg></button>
+          <button data-cam="zoom-out" title="Zoom out" aria-label="Zoom out"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.5 10h11"/></svg></button>
+          <span class="sep"></span>
+          <button data-cam="reset" title="Reset view" aria-label="Reset view"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3.2"/><path d="M10 2.5v3M10 14.5v3M2.5 10h3M14.5 10h3"/></svg></button>
+          <button data-cam="full" title="Full screen" aria-label="Full screen" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7.5V3h4.5M12.5 3H17v4.5M17 12.5V17h-4.5M7.5 17H3v-4.5"/></svg></button>
+        </div>
+      </div>
+    </div>
+    <div class="toolbar">
+      <div class="player" role="group" aria-label="Animation">
+        <button id="hePlay" aria-pressed="false">▶ Play</button><button id="hePause">❚❚ Pause</button><button id="heStop">■ Stop</button>
+        <button id="heBench" class="phone-only" aria-pressed="false" title="Zoom out to the whole bench and back">⤢ Bench</button>
+        <label class="loop"><input type="checkbox" id="heLoop"> Loop</label>
+      </div>
+      <div class="views" role="group" aria-label="Camera views">
+        <span class="k">View</span>
+        <button data-view="iso">Corner</button><button data-view="front">Front</button><button data-view="back">Back</button>
+        <button data-view="left">Left</button><button data-view="right">Right</button><button data-view="top">Top</button>
+      </div>
+    </div>
+  </div>
+
+  <aside class="side">
+    <div class="scope-wrap">
+      <svg id="scope" viewBox="-114 -114 228 228" role="img" aria-label="Microscope view of the marked slide"><g id="scopeArt"></g></svg>
+      <div class="scope-cap" id="scopeCap">The marked slide at x40</div>
+    </div>
+    <nav class="rail" id="rail" aria-label="Stations 1 to 17"></nav>
+    <div class="now-card" id="nowChip" aria-live="polite">
+      <span class="n" id="heNowNum">1</span><span class="sw" id="heNowSwatch"></span>
+      <span><span class="k">Active jar</span><span class="v" id="heNow">Start tray</span><span class="t" id="heNowTime"></span></span>
+    </div>
+    <div class="note" aria-live="polite"><div class="k">What is happening</div><h2 id="heNoteTitle"></h2><p id="heNoteText"></p><button class="note-more" id="noteMore" aria-expanded="false">More</button></div>
+  </aside>
+</main>
+
+<footer class="foot"><span class="credit">Made with <span class="heart" aria-label="love">♥</span> and a passion for teaching pathology · Dr. Atul Tiwari</span>
+  <a class="he-qr-link" href="https://atultiwari.com/" target="_blank" rel="noopener"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 29 29" shape-rendering="crispEdges" class="he-qr"><title>QR code: atultiwari.com</title><path class="qrline" stroke="#231e16" d="M2 2.5h7m2 0h1m1 0h5m2 0h7m-25 1h1m5 0h1m1 0h2m1 0h1m1 0h1m1 0h1m2 0h1m5 0h1m-25 1h1m1 0h3m1 0h1m2 0h3m3 0h2m1 0h1m1 0h3m1 0h1m-25 1h1m1 0h3m1 0h1m3 0h2m3 0h2m1 0h1m1 0h3m1 0h1m-25 1h1m1 0h3m1 0h1m1 0h1m1 0h6m2 0h1m1 0h3m1 0h1m-25 1h1m5 0h1m3 0h1m3 0h3m1 0h1m5 0h1m-25 1h7m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h7m-16 1h1m1 0h3m1 0h1m-16 1h1m1 0h1m1 0h1m1 0h1m3 0h1m2 0h1m2 0h1m3 0h1m2 0h1m-24 1h6m2 0h4m1 0h1m2 0h1m1 0h1m5 0h1m-25 1h2m1 0h1m2 0h1m1 0h2m2 0h3m2 0h4m1 0h3m-24 1h2m1 0h2m3 0h1m3 0h2m1 0h2m1 0h1m3 0h1m-24 1h3m1 0h1m1 0h3m1 0h1m2 0h1m3 0h2m2 0h1m1 0h2m-23 1h1m2 0h1m1 0h2m2 0h1m4 0h1m1 0h1m2 0h1m2 0h1m-25 1h1m2 0h2m1 0h2m2 0h1m2 0h1m3 0h3m2 0h3m-24 1h1m1 0h2m2 0h1m3 0h1m1 0h3m4 0h1m2 0h1m-24 1h1m1 0h1m1 0h4m1 0h1m2 0h2m1 0h7m-14 1h1m1 0h3m2 0h2m3 0h2m1 0h2m-25 1h7m3 0h3m2 0h2m1 0h1m1 0h2m1 0h2m-25 1h1m5 0h1m3 0h1m1 0h3m1 0h1m3 0h2m2 0h1m-25 1h1m1 0h3m1 0h1m1 0h2m1 0h4m1 0h6m1 0h2m-25 1h1m1 0h3m1 0h1m4 0h1m3 0h1m3 0h4m-23 1h1m1 0h3m1 0h1m1 0h3m1 0h2m1 0h2m3 0h1m3 0h1m-25 1h1m5 0h1m2 0h1m1 0h1m1 0h2m1 0h1m1 0h1m1 0h2m1 0h1m-24 1h7m1 0h2m2 0h1m1 0h3m1 0h2m3 0h2"/></svg><span>atultiwari.com</span></a>
+  <a class="he-site-link" href="https://atultiwari.com/" target="_blank" rel="noopener">atultiwari.com</a>
+</footer>
+
+<script>
+  // keep a record of errors on <html> so a headless check can read them
+  window.addEventListener('error', e => { document.documentElement.dataset.errors = (document.documentElement.dataset.errors || '') + (e.message || 'resource error') + ' | '; });
+  window.addEventListener('unhandledrejection', e => { document.documentElement.dataset.errors = (document.documentElement.dataset.errors || '') + String(e.reason) + ' | '; });
+</script>
+<script src="he-data.js"></script>
+<script src="he-scope.js"></script>
+<script type="importmap">
+  { "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+</script>
+<script src="he-build.js"></script>
+<script src="he-phone.js"></script>
+<script src="he-app.js"></script>
+</body>
+</html>
