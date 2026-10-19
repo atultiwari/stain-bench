@@ -18,6 +18,34 @@ Switch between them with the bar at the top of every page.
 
 All three share the same stations, jar names and lab times (47 min 10 s in total), and work on phones: on small screens the view follows the rack up close, with the steps and stations as swipeable strips.
 
+## Videos
+
+Click a picture to play the video in your browser.
+
+### Laptop (16:9)
+
+**Sketchbook**
+
+<a href="https://atultiwari.github.io/stain-bench/media/videos/stain-bench-sketchbook-16x9.mp4"><img src="media/posters/sketchbook-16x9.jpg" width="640" alt="Sketchbook: play the video"></a>
+
+**Turntable**
+
+<a href="https://atultiwari.github.io/stain-bench/media/videos/stain-bench-turntable-16x9.mp4"><img src="media/posters/turntable-16x9.jpg" width="640" alt="Turntable: play the video"></a>
+
+**Working Model**
+
+<a href="https://atultiwari.github.io/stain-bench/media/videos/stain-bench-working-model-16x9.mp4"><img src="media/posters/working-model-16x9.jpg" width="640" alt="Working Model: play the video"></a>
+
+### Phone: YouTube Shorts and Instagram Reels (9:16)
+
+<table><tr>
+<td align="center"><b>Sketchbook</b><br><a href="https://atultiwari.github.io/stain-bench/media/videos/stain-bench-sketchbook-9x16.mp4"><img src="media/posters/sketchbook-9x16.jpg" width="220" alt="Sketchbook: play the video"></a></td>
+<td align="center"><b>Turntable</b><br><a href="https://atultiwari.github.io/stain-bench/media/videos/stain-bench-turntable-9x16.mp4"><img src="media/posters/turntable-9x16.jpg" width="220" alt="Turntable: play the video"></a></td>
+<td align="center"><b>Working Model</b><br><a href="https://atultiwari.github.io/stain-bench/media/videos/stain-bench-working-model-9x16.mp4"><img src="media/posters/working-model-9x16.jpg" width="220" alt="Working Model: play the video"></a></td>
+</tr></table>
+
+The MP4 files are in [`media/videos/`](media/videos/).
+
 ## Protocol and reference
 
 The staining sequence, reagents and times follow:
@@ -52,6 +80,7 @@ turntable/        3D version (Three.js, loaded from a CDN)
 working-model/    Model-driven version: index.html is built from src/
 shared/           The version switcher and the QR code
 docs/             Protocol and phone-layout notes
+media/            Demo videos (laptop and phone) and their poster images
 ```
 
 ## Credits
